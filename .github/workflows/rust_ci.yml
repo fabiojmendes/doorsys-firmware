@@ -19,16 +19,6 @@ jobs:
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        action:
-          - command: build
-            args: --release
-          - command: fmt
-            args: --all -- --check --color always
-          - command: clippy
-            args: --all-targets --all-features --workspace -- -D warnings
 
     steps:
       - name: Checkout repository
@@ -43,5 +33,14 @@ jobs:
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
 
-      - name: Run command
-        run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
+      - name: Install ldproxy
+        run: cargo install ldproxy
+
+      - name: Run fmt command
+        run: cargo fmt --all -- --check --color always
+
+      - name: Run clippy command
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+      - name: Run build command
+        run: cargo build --release
