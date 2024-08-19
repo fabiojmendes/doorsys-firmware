@@ -289,12 +289,12 @@ fn main() -> anyhow::Result<()> {
         built_info::TARGET,
         built_info::RUSTC_VERSION
     );
-    if let (Some(v), Some(short_hash), Some(dirty)) = (
+    if let (Some(version), Some(hash), Some(dirty)) = (
         built_info::GIT_VERSION,
         built_info::GIT_COMMIT_HASH_SHORT,
         built_info::GIT_DIRTY,
     ) {
-        log::info!("Version: {v} ({short_hash})");
+        log::info!("Git version: {version} ({hash})");
         if dirty {
             log::warn!("Repo was dirty");
         }
