@@ -19,6 +19,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate version
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          export CARGO_VERSION=v$(awk '/^version/ {print $3}' Cargo.toml | head -1 | tr -d '"')
+          export GIT_VERSION=${{github.ref_name}}
+          echo "$CARGO_VERSION and $GIT_VERSION"
+          if [[ "${CARGO_VERSION}" != "$GIT_VERSION" ]]; then
+            echo "Tag version and Cargo.toml version don't match" 1>&2
+            exit 1
+          fi
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
