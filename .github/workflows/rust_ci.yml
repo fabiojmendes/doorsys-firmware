@@ -45,7 +45,7 @@ jobs:
         if: github.ref_type == 'tag'
         with:
           generateReleaseNotes: "true"
-          assets:
+          assets: |
             - path: target/riscv32imc-esp-espidf/release/doorsys-firmware
               name: doorsys-firmware-${{ github.ref_name }}.elf
               label: Version ${{ github.ref_name }}
