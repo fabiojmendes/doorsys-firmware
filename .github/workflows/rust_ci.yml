@@ -12,7 +12,7 @@ env:
 
 jobs:
   rust-checks:
-    name: Rust Checks
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,5 +60,4 @@ jobs:
           generateReleaseNotes: "true"
           assets: |
             - path: target/riscv32imc-esp-espidf/release/doorsys-firmware
-              name: doorsys-firmware-${{ github.ref_name }}.elf
-              label: Version ${{ github.ref_name }}
+              name: doorsys-firmware-${{ github.ref_name }}-esp32c3.elf

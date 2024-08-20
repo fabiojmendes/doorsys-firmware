@@ -116,7 +116,6 @@ impl DoorsysConfig {
                         }
 
                         let command_line = str::from_utf8(&read[0..n])?;
-                        log::info!("{}", command_line);
                         match parse_args(command_line) {
                             Ok(Command::Wifi {
                                 ssid,
