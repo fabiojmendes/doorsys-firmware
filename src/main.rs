@@ -1,18 +1,20 @@
 // Reference: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/freertos.html
 
 mod buttons;
+mod config;
 mod door;
 mod mqtt;
 mod network;
 mod user;
 mod wiegand;
 
+use config::DoorsysConfig;
 use doorsys_protocol::{Audit, CodeType};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio::{Output, OutputPin, PinDriver};
 use esp_idf_svc::hal::prelude::Peripherals;
 use esp_idf_svc::mqtt::client::QoS;
-use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{
     esp, gpio_install_isr_service, heap_caps_get_free_size, heap_caps_get_largest_free_block,
     heap_caps_get_minimum_free_size, heap_caps_get_total_size, nvs_get_stats, ESP_INTR_FLAG_IRAM,
@@ -294,10 +296,7 @@ fn main() -> anyhow::Result<()> {
         built_info::GIT_COMMIT_HASH_SHORT,
         built_info::GIT_DIRTY,
     ) {
-        log::info!("Git version: {version} ({hash})");
-        if dirty {
-            log::warn!("Repo was dirty");
-        }
+        log::info!("Git version: {version} ({hash}) dirty: {dirty}");
     }
 
     // Installs the generic GPIO interrupt handler
@@ -307,9 +306,9 @@ fn main() -> anyhow::Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs_part = EspDefaultNvsPartition::take()?;
 
-    let doorsys_nvs = EspNvs::new(nvs_part.clone(), "doorsys", true)?;
+    let mut doorsys_config = DoorsysConfig::new(nvs_part.clone())?;
 
-    let user_db = UserDB::new(doorsys_nvs)?;
+    let user_db = UserDB::new(nvs_part.clone())?;
 
     log::info!("Starting application");
 
@@ -322,9 +321,18 @@ fn main() -> anyhow::Result<()> {
     let signal_pin = peripherals.pins.gpio7;
     setup_reader(door_tx.clone(), user_db.clone(), audit_tx, signal_pin)?;
 
-    let net_id = network::setup_wireless(peripherals.modem, sysloop.clone(), nvs_part.clone())?;
+    let net_id = network::setup_wireless(
+        peripherals.modem,
+        sysloop.clone(),
+        nvs_part.clone(),
+        &mut doorsys_config,
+    )?;
 
-    let mqtt_client = mqtt::setup_mqtt(&net_id, user_db.clone())?;
+    let mqtt_client = mqtt::setup_mqtt(
+        &net_id,
+        user_db.clone(),
+        &doorsys_config.read_mqtt_configs()?,
+    )?;
 
     setup_audit_publiher(&net_id, mqtt_client.clone(), audit_rx);
 

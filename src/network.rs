@@ -1,44 +1,40 @@
 use std::ffi::CStr;
 use std::{thread, time::Duration};
 
+use crate::config::DoorsysConfig;
+
 use esp_idf_svc::eventloop::{EspEventLoop, System};
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::nvs::{EspNvsPartition, NvsDefault};
 use esp_idf_svc::sntp::EspSntp;
 use esp_idf_svc::sys::CONFIG_LWIP_LOCAL_HOSTNAME;
-use esp_idf_svc::wifi::{
-    AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiDeviceId,
-};
-
-const SSID: &str = env!("WIFI_SSID");
-const PASSWORD: &str = env!("WIFI_PASS");
+use esp_idf_svc::wifi::{BlockingWifi, Configuration, EspWifi, WifiDeviceId};
 
 const RECONNECT_COOLDOWN: Duration = Duration::from_secs(5);
 
 pub fn setup_wireless(
     modem: Modem,
     sysloop: EspEventLoop<System>,
-    nvs: EspNvsPartition<NvsDefault>,
+    nvs_part: EspNvsPartition<NvsDefault>,
+    doorsys_config: &mut DoorsysConfig,
 ) -> anyhow::Result<String> {
     let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(modem, sysloop.clone(), Some(nvs.clone()))?,
+        EspWifi::new(modem, sysloop.clone(), Some(nvs_part.clone()))?,
         sysloop,
     )?;
 
     let net_id = create_net_id(&wifi)?;
     log::info!("Device net_id: {net_id}");
 
-    let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        password: PASSWORD.try_into().unwrap(),
-        auth_method: AuthMethod::WPA2Personal,
-        ..Default::default()
-    });
-
-    wifi.set_configuration(&wifi_configuration)?;
-
     wifi.start()?;
     log::info!("Wifi started");
+
+    if let Ok(Configuration::Client(config)) = wifi.get_configuration() {
+        log::info!("Existing wifi config: {:?}", config);
+    } else {
+        log::warn!("No wifi config found.");
+        doorsys_config.run_config_server(&mut wifi)?;
+    }
 
     connect_wifi_loop(&mut wifi);
 

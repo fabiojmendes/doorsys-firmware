@@ -6,11 +6,8 @@ use esp_idf_svc::mqtt::client::{
     Details, EspMqttClient, EventPayload, MqttClientConfiguration, QoS,
 };
 
+use crate::config::MqttConfig;
 use crate::user::UserDB;
-
-const MQTT_URL: &str = env!("MQTT_URL");
-const MQTT_USER: &str = env!("MQTT_USER");
-const MQTT_PASS: &str = env!("MQTT_PASS");
 
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
@@ -19,19 +16,23 @@ static mut SHARED_TOPIC: String = String::new();
 
 pub type MqttClient = EspMqttClient<'static>;
 
-pub fn setup_mqtt(net_id: &str, user_db: UserDB) -> anyhow::Result<Arc<Mutex<MqttClient>>> {
+pub fn setup_mqtt(
+    net_id: &str,
+    user_db: UserDB,
+    config: &MqttConfig,
+) -> anyhow::Result<Arc<Mutex<MqttClient>>> {
     let mqtt_config = MqttClientConfiguration {
         client_id: Some(net_id),
-        username: Some(MQTT_USER),
-        password: Some(MQTT_PASS),
+        username: Some(&config.username),
+        password: Some(&config.password),
         disable_clean_session: true,
         ..Default::default()
     };
 
     let (conn_sender, conn_receiver) = mpsc::channel();
 
-    let client =
-        EspMqttClient::new_cb(MQTT_URL, &mqtt_config, move |event| match event.payload() {
+    let client = EspMqttClient::new_cb(&config.url, &mqtt_config, move |event| {
+        match event.payload() {
             EventPayload::Received {
                 id: _,
                 topic,
@@ -44,7 +45,8 @@ pub fn setup_mqtt(net_id: &str, user_db: UserDB) -> anyhow::Result<Arc<Mutex<Mqt
             }
             EventPayload::Error(e) => log::error!("from mqtt: {:?}", e),
             event => log::info!("mqtt event: {:?}", event),
-        })?;
+        }
+    })?;
     let client = Arc::new(Mutex::new(client));
 
     subscriber_thread(client.clone(), conn_receiver);

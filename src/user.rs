@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
-use esp_idf_svc::nvs::{EspNvs, NvsDefault};
+use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 const NVS_NAMESPACE: &str = "codes";
@@ -26,7 +26,8 @@ fn persist(data: &mut UserData) -> anyhow::Result<()> {
 }
 
 impl UserDB {
-    pub fn new(nvs: EspNvs<NvsDefault>) -> anyhow::Result<Self> {
+    pub fn new(nvs_part: EspNvsPartition<NvsDefault>) -> anyhow::Result<Self> {
+        let nvs = EspNvs::new(nvs_part, "doorsys", true)?;
         let blob_size = nvs.blob_len(NVS_NAMESPACE)?.unwrap_or(0);
         let mut buf = vec![0; blob_size];
         let maybe_blob = nvs
@@ -37,9 +38,14 @@ impl UserDB {
             Some(slice) => {
                 let (codes, bytes) = bincode::decode_from_slice(slice, BINCODE_CONFIG)
                     .context("error deconding blob")?;
+                let data = UserData { nvs, codes };
 
-                log::info!("Loaded {} bytes for codes", bytes);
-                Ok(UserDB(Arc::new(Mutex::new(UserData { nvs, codes }))))
+                log::info!(
+                    "Loaded {} codes from flash {} bytes",
+                    data.codes.len(),
+                    bytes
+                );
+                Ok(UserDB(Arc::new(Mutex::new(data))))
             }
             None => {
                 log::info!("No codes found, starting blank");
