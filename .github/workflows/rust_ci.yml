@@ -9,11 +9,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  MQTT_URL: mqtt://localhost
-  MQTT_USER: user
-  MQTT_PASS: pass
-  WIFI_SSID: ssid
-  WIFI_PASS: pass
 
 jobs:
   rust-checks:
@@ -44,3 +39,13 @@ jobs:
 
       - name: Run build command
         run: cargo build --release
+
+      - name: Publish release
+        uses: ghalactic/github-release-from-tag@v5
+        if: github.ref_type == 'tag'
+        with:
+          generateReleaseNotes: "true"
+          assets:
+            - path: target/riscv32imc-esp-espidf/release/doorsys-firmware
+              name: doorsys-firmware-${{ github.ref_name }}.elf
+              label: Version ${{ github.ref_name }}
