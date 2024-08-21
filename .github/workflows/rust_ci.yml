@@ -11,26 +11,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-checks:
-    name: Build
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate version
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        run: |
-          export CARGO_VERSION=v$(awk '/^version/ {print $3}' Cargo.toml | head -1 | tr -d '"')
-          export GIT_VERSION=${{github.ref_name}}
-          echo "$CARGO_VERSION and $GIT_VERSION"
-          if [[ "${CARGO_VERSION}" != "$GIT_VERSION" ]]; then
-            echo "Tag version and Cargo.toml version don't match" 1>&2
-            exit 1
-          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -50,14 +36,58 @@ jobs:
       - name: Run clippy command
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
+  deploy:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}-${{github.ref_name}}
+    strategy:
+      matrix:
+        chip: ["esp32c3"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          export CARGO_VERSION=v$(awk '/^version/ {print $3}' Cargo.toml | head -1 | tr -d '"')
+          export GIT_VERSION=${{github.ref_name}}
+          echo "Cargo version: $CARGO_VERSION"
+          echo "Git version: $GIT_VERSION"
+          if [[ "${CARGO_VERSION}" != "$GIT_VERSION" ]]; then
+            echo "Tag version and Cargo.toml version don't match" 1>&2
+            exit 1
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install ldproxy
+        run: cargo install ldproxy
+
       - name: Run build command
         run: cargo build --release
 
+      - name: Package
+        run: |
+          mkdir $PACKAGE_NAME
+          cp target/riscv32imc-esp-espidf/release/doorsys-firmware ${PACKAGE_NAME}/
+          cp -r README.md LICENSE $PACKAGE_NAME/
+          tar -czvf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME
+
       - name: Publish release
         uses: ghalactic/github-release-from-tag@v5
-        if: github.ref_type == 'tag'
         with:
           generateReleaseNotes: "true"
           assets: |
-            - path: target/riscv32imc-esp-espidf/release/doorsys-firmware
-              name: doorsys-firmware-${{ github.ref_name }}-esp32c3.elf
+            - path: ${{env.PACKAGE_NAME}}.tar.gz
