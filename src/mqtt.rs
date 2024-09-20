@@ -9,8 +9,6 @@ use esp_idf_svc::mqtt::client::{
 use crate::config::MqttConfig;
 use crate::user::UserDB;
 
-const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
-
 static mut SHARED_BUF: Vec<u8> = Vec::new();
 static mut SHARED_TOPIC: String = String::new();
 
@@ -99,26 +97,26 @@ fn route_message(topic: Option<&str>, data: &[u8], details: Details, user_db: &U
 }
 
 fn process_user_message(data: &[u8], user_db: &UserDB) {
-    match bincode::decode_from_slice(data, BINCODE_CONFIG) {
-        Ok((UserAction::Add(code), _)) => {
+    match postcard::from_bytes(data) {
+        Ok(UserAction::Add(code)) => {
             log::info!("Adding code {}", code);
             if let Err(e) = user_db.add(code) {
                 log::error!("Error adding new code {}", e);
             }
         }
-        Ok((UserAction::Del(code), _)) => {
+        Ok(UserAction::Del(code)) => {
             log::info!("Deleting code {}", code);
             if let Err(e) = user_db.delete(code) {
                 log::error!("Error deleting code {}", e);
             }
         }
-        Ok((UserAction::Replace { old, new }, _)) => {
+        Ok(UserAction::Replace { old, new }) => {
             log::info!("Replacing code {} with {}", old, new);
             if let Err(e) = user_db.replace(old, new) {
                 log::error!("Error replacing code {}", e);
             }
         }
-        Ok((UserAction::Bulk(codes), _)) => {
+        Ok(UserAction::Bulk(codes)) => {
             log::info!("Bulk adding codes {}", codes.len());
             if let Err(e) = user_db.bulk(codes) {
                 log::error!("Error bulk inserting codes {}", e);

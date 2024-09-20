@@ -6,7 +6,6 @@ use std::{
 use anyhow::Context;
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 
-const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 const NVS_NAMESPACE: &str = "codes";
 
 #[derive(Clone)]
@@ -18,7 +17,7 @@ struct UserData {
 }
 
 fn persist(data: &mut UserData) -> anyhow::Result<()> {
-    let buf = bincode::encode_to_vec(&data.codes, BINCODE_CONFIG).context("encoding failure")?;
+    let buf = postcard::to_allocvec(&data.codes).context("encoding failure")?;
     data.nvs
         .set_raw(NVS_NAMESPACE, &buf)
         .context("nvs failure")?;
@@ -36,14 +35,13 @@ impl UserDB {
 
         match maybe_blob {
             Some(slice) => {
-                let (codes, bytes) = bincode::decode_from_slice(slice, BINCODE_CONFIG)
-                    .context("error deconding blob")?;
+                let codes = postcard::from_bytes(slice).context("error deconding blob")?;
                 let data = UserData { nvs, codes };
 
                 log::info!(
-                    "Loaded {} codes from flash {} bytes",
+                    "Loaded {} codes from flash ({} bytes)",
                     data.codes.len(),
-                    bytes
+                    slice.len()
                 );
                 Ok(UserDB(Arc::new(Mutex::new(data))))
             }

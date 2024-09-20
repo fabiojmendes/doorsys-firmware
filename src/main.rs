@@ -201,10 +201,8 @@ fn setup_audit_publiher(
 ) {
     let topic = format!("doorsys/audit/{device_id}");
     thread::spawn(move || {
-        let config = bincode::config::standard();
-
         for audit in audit_rx {
-            match bincode::encode_to_vec(audit, config) {
+            match postcard::to_allocvec(&audit) {
                 Ok(buffer) => {
                     if let Err(e) = mqtt_client.lock().unwrap().enqueue(
                         &topic,
