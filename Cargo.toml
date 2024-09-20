@@ -1,6 +1,6 @@
 [package]
 name = "doorsys-firmware"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Fabio Mendes <fabiojmendes@gmail.com>"]
 edition = "2021"
 resolver = "2"
@@ -27,9 +27,9 @@ esp-idf-svc = { version = "0.49", features = [
 ] }
 embedded-svc = { version = "*", features = ["use_serde"] }
 # Application Dependencies
-doorsys-protocol = { path = "../doorsys-protocol/" }
+doorsys-protocol = { git = "https://github.com/fabiojmendes/doorsys-protocol.git", tag = "v0.2.0" }
 anyhow = "1"
-serde = { version = "1", default-features = false }
+serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 
