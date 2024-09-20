@@ -88,6 +88,7 @@ jobs:
       - name: Publish release
         uses: ghalactic/github-release-from-tag@v5
         with:
+          prerelease: "false"
           generateReleaseNotes: "true"
           assets: |
             - path: ${{env.PACKAGE_NAME}}.tar.gz

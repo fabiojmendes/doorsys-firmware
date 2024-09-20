@@ -1,6 +1,6 @@
 [package]
 name = "doorsys-firmware"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Fabio Mendes <fabiojmendes@gmail.com>"]
 edition = "2021"
 resolver = "2"
