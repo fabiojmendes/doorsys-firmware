@@ -1,6 +1,5 @@
 // Reference: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/freertos.html
 
-mod buttons;
 mod config;
 mod door;
 mod mqtt;
@@ -30,7 +29,6 @@ use std::time::SystemTime;
 use std::{thread, time::Duration};
 use wiegand::Packet;
 
-use crate::buttons::Button;
 use crate::user::UserDB;
 use crate::wiegand::Reader;
 
@@ -41,21 +39,6 @@ const DOOR_OPEN_DELAY: Duration = Duration::from_secs(4);
 
 const GPIO_D0: i32 = 4;
 const GPIO_D1: i32 = 5;
-const GPIO_BUTTON: i32 = 6;
-
-fn setup_button(door_tx: Sender<()>) {
-    thread::spawn(move || {
-        let mut button = Button::new(GPIO_BUTTON);
-        button.start().unwrap();
-
-        loop {
-            if button.wait_for_press() {
-                log::info!("button press");
-                door_tx.send(()).unwrap();
-            }
-        }
-    });
-}
 
 fn setup_door(pin: impl OutputPin, door_rx: Receiver<()>) -> anyhow::Result<()> {
     let mut door = door::Door::new(pin)?;
@@ -312,8 +295,6 @@ fn main() -> anyhow::Result<()> {
 
     let (door_tx, door_rx) = mpsc::channel();
     setup_door(peripherals.pins.gpio10, door_rx)?;
-
-    setup_button(door_tx.clone());
 
     let (audit_tx, audit_rx) = mpsc::channel();
     let signal_pin = peripherals.pins.gpio7;
