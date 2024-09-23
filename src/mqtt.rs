@@ -3,7 +3,7 @@ use std::thread;
 
 use doorsys_protocol::UserAction;
 use esp_idf_svc::mqtt::client::{
-    Details, EspMqttClient, EspMqttConnection, EventPayload, MqttClientConfiguration, QoS,
+    Details, EspMqttClient, EventPayload, MqttClientConfiguration, QoS,
 };
 
 use crate::config::MqttConfig;
@@ -24,65 +24,55 @@ pub fn setup_mqtt(
         ..Default::default()
     };
 
-    let (sub_sender, sub_receiver) = mpsc::channel();
+    let (conn_sender, conn_receiver) = mpsc::channel();
 
-    let (client, conn) = EspMqttClient::new(&config.url, &mqtt_config)?;
-    connection_polling_thread(conn, sub_sender, user_db);
-
-    let client = Arc::new(Mutex::new(client));
-    subscriber_thread(client.clone(), sub_receiver);
-    Ok(client)
-}
-
-fn connection_polling_thread(
-    mut conn: EspMqttConnection,
-    sub_sender: mpsc::Sender<()>,
-    user_db: UserDB,
-) {
-    thread::spawn(move || {
-        let mut shared_buf = Vec::new();
-        let mut shared_topic = String::new();
-        while let Ok(event) = conn.next() {
-            match event.payload() {
-                EventPayload::Received {
-                    id: _,
+    let mut shared_buffer = Vec::new();
+    let mut shared_topic = String::new();
+    let client = EspMqttClient::new_cb(&config.url, &mqtt_config, move |event| {
+        match event.payload() {
+            EventPayload::Received {
+                id: _,
+                topic,
+                data,
+                details,
+            } => {
+                log::info!(
+                    "Message received {:?} {:?}, {} bytes",
                     topic,
-                    data,
                     details,
-                } => {
-                    log::info!(
-                        "Message received {:?} {:?}, {} bytes",
-                        topic,
-                        details,
-                        data.len()
-                    );
-                    let (topic, data) = match details {
-                        Details::InitialChunk(init) => {
-                            shared_buf = Vec::with_capacity(init.total_data_size);
-                            shared_buf.extend_from_slice(data);
-                            shared_topic = String::from(topic.unwrap());
-                            continue;
+                    data.len()
+                );
+                let (topic, data) = match details {
+                    Details::InitialChunk(init) => {
+                        shared_buffer = Vec::with_capacity(init.total_data_size);
+                        shared_buffer.extend_from_slice(data);
+                        shared_topic = String::from(topic.unwrap());
+                        return;
+                    }
+                    Details::SubsequentChunk(_sub) => {
+                        shared_buffer.extend_from_slice(data);
+                        if shared_buffer.len() != shared_buffer.capacity() {
+                            return;
                         }
-                        Details::SubsequentChunk(_sub) => {
-                            shared_buf.extend_from_slice(data);
-                            if shared_buf.len() != shared_buf.capacity() {
-                                continue;
-                            }
-                            (shared_topic.as_str(), shared_buf.as_slice())
-                        }
-                        Details::Complete => (topic.unwrap(), data),
-                    };
-                    route_message(topic, data, &user_db);
-                }
-                EventPayload::Connected(session) => {
-                    log::info!("Connected session = {session}");
-                    sub_sender.send(()).unwrap();
-                }
-                EventPayload::Error(e) => log::error!("from mqtt: {:?}", e),
-                event => log::info!("mqtt event: {:?}", event),
+                        (&*shared_topic, &*shared_buffer)
+                    }
+                    Details::Complete => (topic.unwrap(), data),
+                };
+                route_message(topic, data, &user_db);
             }
+            EventPayload::Connected(session) => {
+                log::info!("Connected session = {session}");
+                conn_sender.send(()).unwrap();
+            }
+            EventPayload::Error(e) => log::error!("from mqtt: {:?}", e),
+            event => log::info!("mqtt event: {:?}", event),
         }
-    });
+    })?;
+    let client = Arc::new(Mutex::new(client));
+
+    subscriber_thread(client.clone(), conn_receiver);
+
+    Ok(client)
 }
 
 fn subscriber_thread(
