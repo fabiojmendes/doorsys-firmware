@@ -46,7 +46,7 @@ impl UserDB {
                 Ok(UserDB(Arc::new(Mutex::new(data))))
             }
             None => {
-                log::info!("No codes found, starting blank");
+                log::warn!("No codes found, starting blank");
                 Ok(UserDB(Arc::new(Mutex::new(UserData {
                     nvs,
                     codes: BTreeSet::new(),
