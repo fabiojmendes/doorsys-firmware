@@ -3,14 +3,11 @@ use std::thread;
 
 use doorsys_protocol::UserAction;
 use esp_idf_svc::mqtt::client::{
-    Details, EspMqttClient, EventPayload, MqttClientConfiguration, QoS,
+    Details, EspMqttClient, EspMqttConnection, EventPayload, MqttClientConfiguration, QoS,
 };
 
 use crate::config::MqttConfig;
 use crate::user::UserDB;
-
-static mut SHARED_BUF: Vec<u8> = Vec::new();
-static mut SHARED_TOPIC: String = String::new();
 
 pub type MqttClient = EspMqttClient<'static>;
 
@@ -27,29 +24,65 @@ pub fn setup_mqtt(
         ..Default::default()
     };
 
-    let (conn_sender, conn_receiver) = mpsc::channel();
+    let (sub_sender, sub_receiver) = mpsc::channel();
 
-    let client = EspMqttClient::new_cb(&config.url, &mqtt_config, move |event| {
-        match event.payload() {
-            EventPayload::Received {
-                id: _,
-                topic,
-                data,
-                details,
-            } => route_message(topic, data, details, &user_db),
-            EventPayload::Connected(session) => {
-                log::info!("Connected session = {session}");
-                conn_sender.send(()).unwrap();
-            }
-            EventPayload::Error(e) => log::error!("from mqtt: {:?}", e),
-            event => log::info!("mqtt event: {:?}", event),
-        }
-    })?;
+    let (client, conn) = EspMqttClient::new(&config.url, &mqtt_config)?;
+    connection_polling_thread(conn, sub_sender, user_db);
+
     let client = Arc::new(Mutex::new(client));
-
-    subscriber_thread(client.clone(), conn_receiver);
-
+    subscriber_thread(client.clone(), sub_receiver);
     Ok(client)
+}
+
+fn connection_polling_thread(
+    mut conn: EspMqttConnection,
+    sub_sender: mpsc::Sender<()>,
+    user_db: UserDB,
+) {
+    thread::spawn(move || {
+        let mut shared_buf = Vec::new();
+        let mut shared_topic = String::new();
+        while let Ok(event) = conn.next() {
+            match event.payload() {
+                EventPayload::Received {
+                    id: _,
+                    topic,
+                    data,
+                    details,
+                } => {
+                    log::info!(
+                        "Message received {:?} {:?}, {} bytes",
+                        topic,
+                        details,
+                        data.len()
+                    );
+                    let (topic, data) = match details {
+                        Details::InitialChunk(init) => {
+                            shared_buf = Vec::with_capacity(init.total_data_size);
+                            shared_buf.extend_from_slice(data);
+                            shared_topic = String::from(topic.unwrap());
+                            continue;
+                        }
+                        Details::SubsequentChunk(_sub) => {
+                            shared_buf.extend_from_slice(data);
+                            if shared_buf.len() != shared_buf.capacity() {
+                                continue;
+                            }
+                            (shared_topic.as_str(), shared_buf.as_slice())
+                        }
+                        Details::Complete => (topic.unwrap(), data),
+                    };
+                    route_message(topic, data, &user_db);
+                }
+                EventPayload::Connected(session) => {
+                    log::info!("Connected session = {session}");
+                    sub_sender.send(()).unwrap();
+                }
+                EventPayload::Error(e) => log::error!("from mqtt: {:?}", e),
+                event => log::info!("mqtt event: {:?}", event),
+            }
+        }
+    });
 }
 
 fn subscriber_thread(
@@ -67,29 +100,7 @@ fn subscriber_thread(
     });
 }
 
-fn route_message(topic: Option<&str>, data: &[u8], details: Details, user_db: &UserDB) {
-    log::info!(
-        "Message received {:?} {:?}, {} bytes",
-        topic,
-        details,
-        data.len()
-    );
-    let (topic, data) = match details {
-        Details::InitialChunk(init) => unsafe {
-            SHARED_BUF = Vec::with_capacity(init.total_data_size);
-            SHARED_BUF.extend_from_slice(data);
-            SHARED_TOPIC = String::from(topic.unwrap());
-            return;
-        },
-        Details::SubsequentChunk(_sub) => unsafe {
-            SHARED_BUF.extend_from_slice(data);
-            if SHARED_BUF.len() != SHARED_BUF.capacity() {
-                return;
-            }
-            (&*SHARED_TOPIC, &*SHARED_BUF)
-        },
-        Details::Complete => (topic.unwrap(), data),
-    };
+fn route_message(topic: &str, data: &[u8], user_db: &UserDB) {
     match topic {
         "doorsys/user" => process_user_message(data, user_db),
         _ => log::warn!("unknown topic {}", topic),
