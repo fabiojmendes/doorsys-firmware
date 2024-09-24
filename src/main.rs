@@ -10,7 +10,7 @@ mod wiegand;
 use config::DoorsysConfig;
 use doorsys_protocol::{Audit, CodeType};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::gpio::{Output, OutputPin, PinDriver};
+use esp_idf_svc::hal::gpio::{InputPin, Output, OutputPin, PinDriver};
 use esp_idf_svc::hal::prelude::Peripherals;
 use esp_idf_svc::mqtt::client::QoS;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -36,9 +36,6 @@ const MAX_PIN_LENGTH: usize = 8;
 const STAR_KEY: u8 = 0x0A;
 const HASH_KEY: u8 = 0x0B;
 const DOOR_OPEN_DELAY: Duration = Duration::from_secs(4);
-
-const GPIO_D0: i32 = 4;
-const GPIO_D1: i32 = 5;
 
 fn setup_door(pin: impl OutputPin, door_rx: Receiver<()>) -> anyhow::Result<()> {
     let mut door = door::Door::new(pin)?;
@@ -87,13 +84,15 @@ fn setup_reader(
     door_tx: Sender<()>,
     user_db: UserDB,
     audit_tx: Sender<Audit>,
+    d0_gpio: impl InputPin,
+    d1_gpio: impl InputPin,
     signal_pin: impl OutputPin,
 ) -> anyhow::Result<()> {
     let mut signal_driver = PinDriver::output_od(signal_pin)?;
     signal_driver.set_high()?;
 
     thread::spawn(move || {
-        let mut reader = Reader::new(GPIO_D0, GPIO_D1);
+        let mut reader = Reader::new(d0_gpio, d1_gpio);
         reader.start().unwrap();
 
         let mut keys = Vec::with_capacity(MAX_PIN_LENGTH);
@@ -297,8 +296,14 @@ fn main() -> anyhow::Result<()> {
     setup_door(peripherals.pins.gpio10, door_rx)?;
 
     let (audit_tx, audit_rx) = mpsc::channel();
-    let signal_pin = peripherals.pins.gpio7;
-    setup_reader(door_tx.clone(), user_db.clone(), audit_tx, signal_pin)?;
+    setup_reader(
+        door_tx.clone(),
+        user_db.clone(),
+        audit_tx,
+        peripherals.pins.gpio4,
+        peripherals.pins.gpio5,
+        peripherals.pins.gpio7,
+    )?;
 
     let net_id = network::setup_wireless(
         peripherals.modem,

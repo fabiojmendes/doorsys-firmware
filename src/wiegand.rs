@@ -6,12 +6,15 @@ use std::{
     time::Duration,
 };
 
-use esp_idf_svc::sys::{
-    esp, esp_timer_create, esp_timer_create_args_t, esp_timer_delete,
-    esp_timer_dispatch_t_ESP_TIMER_TASK, esp_timer_handle_t, esp_timer_start_once, esp_timer_stop,
-    gpio_config, gpio_config_t, gpio_get_level, gpio_int_type_t_GPIO_INTR_DISABLE,
-    gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_isr_handler_add, gpio_isr_handler_remove,
-    gpio_mode_t_GPIO_MODE_INPUT, gpio_reset_pin, gpio_set_intr_type,
+use esp_idf_svc::{
+    hal::gpio::InputPin,
+    sys::{
+        esp, esp_timer_create, esp_timer_create_args_t, esp_timer_delete,
+        esp_timer_dispatch_t_ESP_TIMER_TASK, esp_timer_handle_t, esp_timer_start_once,
+        esp_timer_stop, gpio_config, gpio_config_t, gpio_get_level,
+        gpio_int_type_t_GPIO_INTR_DISABLE, gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_isr_handler_add,
+        gpio_isr_handler_remove, gpio_mode_t_GPIO_MODE_INPUT, gpio_reset_pin, gpio_set_intr_type,
+    },
 };
 
 const WIEGAND_TIMEOUT: u64 = 50000; // 50ms
@@ -19,10 +22,10 @@ const BUFFER_SIZE: usize = 4;
 const PIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[link_section = ".iram0.text"]
-unsafe extern "C" fn wiegand_interrupt(arg: *mut c_void) {
-    let reader = &mut *(arg as *mut Reader);
-    let d0 = gpio_get_level(reader.gpio_d0);
-    let d1 = gpio_get_level(reader.gpio_d1);
+unsafe extern "C" fn wiegand_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
+    let reader = &mut *(arg as *mut Reader<D0, D1>);
+    let d0 = gpio_get_level(reader.d0_gpio.pin());
+    let d1 = gpio_get_level(reader.d1_gpio.pin());
     if d0 == d1 {
         return;
     }
@@ -42,8 +45,8 @@ unsafe extern "C" fn wiegand_interrupt(arg: *mut c_void) {
     esp_timer_start_once(timer, WIEGAND_TIMEOUT);
 }
 
-unsafe extern "C" fn timer_interrupt(arg: *mut c_void) {
-    let reader = &mut *(arg as *mut Reader);
+unsafe extern "C" fn timer_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
+    let reader = &mut *(arg as *mut Reader<D0, D1>);
     reader.stop();
 
     let packet = Packet::new(reader.bits, reader.data);
@@ -130,22 +133,22 @@ impl Packet {
     }
 }
 
-pub struct Reader {
+pub struct Reader<D0: InputPin, D1: InputPin> {
     bits: usize,
     data: [u8; BUFFER_SIZE],
-    gpio_d0: i32,
-    gpio_d1: i32,
+    d0_gpio: D0,
+    d1_gpio: D1,
     timer: Option<esp_timer_handle_t>,
     reader_tx: Sender<Packet>,
     reader_rx: Receiver<Packet>,
 }
 
-impl Reader {
-    pub fn new(gpio_d0: i32, gpio_d1: i32) -> Self {
+impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
+    pub fn new(d0_gpio: D0, d1_gpio: D1) -> Self {
         let (reader_tx, reader_rx) = mpsc::channel();
         Reader {
-            gpio_d0,
-            gpio_d1,
+            d0_gpio,
+            d1_gpio,
             data: [0; BUFFER_SIZE],
             bits: 0,
             timer: None,
@@ -160,7 +163,7 @@ impl Reader {
         let timer_config = esp_timer_create_args_t {
             name: CString::new("wiegand")?.into_raw(),
             arg: reader_ptr,
-            callback: Some(timer_interrupt),
+            callback: Some(timer_interrupt::<D0, D1>),
             dispatch_method: esp_timer_dispatch_t_ESP_TIMER_TASK,
             skip_unhandled_events: true,
         };
@@ -171,7 +174,7 @@ impl Reader {
 
         // Configures the button
         let io_conf = gpio_config_t {
-            pin_bit_mask: (1 << self.gpio_d0 | 1 << self.gpio_d1),
+            pin_bit_mask: (1 << self.d0_gpio.pin() | 1 << self.d1_gpio.pin()),
             mode: gpio_mode_t_GPIO_MODE_INPUT,
             pull_up_en: true.into(),
             pull_down_en: false.into(),
@@ -184,13 +187,13 @@ impl Reader {
 
             // Registers our function with the generic GPIO interrupt handler we installed earlier.
             esp!(gpio_isr_handler_add(
-                self.gpio_d0,
-                Some(wiegand_interrupt),
+                self.d0_gpio.pin(),
+                Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
             esp!(gpio_isr_handler_add(
-                self.gpio_d1,
-                Some(wiegand_interrupt),
+                self.d1_gpio.pin(),
+                Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
         }
@@ -203,22 +206,22 @@ impl Reader {
             unsafe { esp_timer_stop(timer) };
         }
         unsafe {
-            gpio_set_intr_type(self.gpio_d0, gpio_int_type_t_GPIO_INTR_DISABLE);
-            gpio_set_intr_type(self.gpio_d1, gpio_int_type_t_GPIO_INTR_DISABLE);
+            gpio_set_intr_type(self.d0_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
+            gpio_set_intr_type(self.d1_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
         }
     }
 
     fn reset(&mut self) {
         unsafe {
-            gpio_set_intr_type(self.gpio_d0, gpio_int_type_t_GPIO_INTR_NEGEDGE);
-            gpio_set_intr_type(self.gpio_d1, gpio_int_type_t_GPIO_INTR_NEGEDGE);
+            gpio_set_intr_type(self.d0_gpio.pin(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
+            gpio_set_intr_type(self.d1_gpio.pin(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
         }
         self.data = [0; BUFFER_SIZE];
         self.bits = 0;
     }
 }
 
-impl Iterator for Reader {
+impl<D0: InputPin, D1: InputPin> Iterator for Reader<D0, D1> {
     type Item = Result<Packet, RecvTimeoutError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -226,18 +229,18 @@ impl Iterator for Reader {
     }
 }
 
-impl Drop for Reader {
+impl<D0: InputPin, D1: InputPin> Drop for Reader<D0, D1> {
     fn drop(&mut self) {
         unsafe {
             if let Some(timer) = self.timer {
                 esp_timer_stop(timer);
                 esp_timer_delete(timer);
             }
-            gpio_isr_handler_remove(self.gpio_d0);
-            gpio_reset_pin(self.gpio_d0);
+            gpio_isr_handler_remove(self.d0_gpio.pin());
+            gpio_reset_pin(self.d0_gpio.pin());
 
-            gpio_isr_handler_remove(self.gpio_d1);
-            gpio_reset_pin(self.gpio_d1);
+            gpio_isr_handler_remove(self.d1_gpio.pin());
+            gpio_reset_pin(self.d1_gpio.pin());
         }
     }
 }
