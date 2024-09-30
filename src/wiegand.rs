@@ -87,6 +87,8 @@ fn parity_check_26bits(mut rfid: u32) -> bool {
     true
 }
 
+/// Packet read from the wiegand interface
+/// It can be a card tap, a key press or undefined bits
 #[derive(Debug)]
 pub enum Packet {
     Key {
@@ -133,6 +135,22 @@ impl Packet {
     }
 }
 
+/// Wiegand reader
+/// This is the implementation the wiegand protocol using 2 gpio pins.
+/// The interrupt service must be installed as this code relies on interrupts
+/// to read the sinterface signals.
+///
+/// Usage:
+/// ```rust
+/// // Installs the generic GPIO interrupt handler
+/// esp!(unsafe { gpio_install_isr_service(ESP_INTR_FLAG_IRAM as i32) })?;
+///
+/// let reader = Reader::new(d0, d1);
+/// reader.init();
+/// for packet in reader {
+///     // proccess packet
+/// }
+/// ```
 pub struct Reader<D0: InputPin, D1: InputPin> {
     bits: usize,
     data: [u8; BUFFER_SIZE],
@@ -157,7 +175,7 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
         }
     }
 
-    pub fn start(&mut self) -> anyhow::Result<()> {
+    pub fn init(&mut self) -> anyhow::Result<()> {
         let reader_ptr = self as *mut _ as *mut c_void;
 
         let timer_config = esp_timer_create_args_t {
@@ -172,7 +190,7 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
         esp!(unsafe { esp_timer_create(&timer_config, &mut timer_handle) })?;
         self.timer = Some(timer_handle);
 
-        // Configures the button
+        // Configures d0 and d1
         let io_conf = gpio_config_t {
             pin_bit_mask: (1 << self.d0_gpio.pin() | 1 << self.d1_gpio.pin()),
             mode: gpio_mode_t_GPIO_MODE_INPUT,
@@ -182,10 +200,11 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
         };
 
         unsafe {
-            // Writes the button configuration to the registers
+            // Writes the configuration to the registers
             esp!(gpio_config(&io_conf))?;
 
-            // Registers our function with the generic GPIO interrupt handler we installed earlier.
+            // Registers our function with the generic GPIO interrupt handler
+            // This assumes gpio_install_isr_service was called before
             esp!(gpio_isr_handler_add(
                 self.d0_gpio.pin(),
                 Some(wiegand_interrupt::<D0, D1>),

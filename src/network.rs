@@ -12,6 +12,9 @@ use esp_idf_svc::wifi::{BlockingWifi, Configuration, EspWifi, WifiDeviceId};
 
 const RECONNECT_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// Setup the wifi and spawns the reconnect thread.
+/// If no previous wifi configuration is found, it will start in
+/// AP mode and launch the configuration server and wait for connections.
 pub fn setup_wireless(
     modem: Modem,
     sysloop: EspEventLoop<System>,

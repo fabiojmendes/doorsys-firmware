@@ -55,6 +55,7 @@ fn setup_door(pin: impl OutputPin, door_rx: Receiver<()>) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Plays a sound when the door opens or the code is invalid
 fn keypad_feedback(
     success: bool,
     pin: &mut PinDriver<'_, impl OutputPin, Output>,
@@ -80,6 +81,7 @@ fn keys_to_int(keys: &[u8]) -> i32 {
         .fold(0, |acc, (i, num)| acc + 10i32.pow(i as u32) * num as i32)
 }
 
+/// Setup the wiegand reader and spawns a thread to read incoming packets
 fn setup_reader(
     door_tx: Sender<()>,
     user_db: UserDB,
@@ -93,7 +95,7 @@ fn setup_reader(
 
     thread::spawn(move || {
         let mut reader = Reader::new(d0_gpio, d1_gpio);
-        reader.start().unwrap();
+        reader.init().unwrap();
 
         let mut keys = Vec::with_capacity(MAX_PIN_LENGTH);
 
@@ -176,6 +178,7 @@ fn setup_reader(
     Ok(())
 }
 
+/// Publishes mqtt audit events
 fn setup_audit_publiher(
     device_id: &str,
     mqtt_client: Arc<Mutex<MqttClient>>,
@@ -203,6 +206,7 @@ fn setup_audit_publiher(
     });
 }
 
+/// Starts the health check thread
 fn health_check(net_id: &str, mqtt_client: Arc<Mutex<MqttClient>>) -> anyhow::Result<()> {
     let systime = EspSystemTime {};
 
@@ -279,7 +283,8 @@ fn main() -> anyhow::Result<()> {
         log::info!("Git version: {version} ({hash}) dirty: {dirty}");
     }
 
-    // Installs the generic GPIO interrupt handler
+    // Installs the generic GPIO interrupt handler which will
+    // be used later on by the wiegand reader.
     esp!(unsafe { gpio_install_isr_service(ESP_INTR_FLAG_IRAM as i32) })?;
 
     let peripherals = Peripherals::take().unwrap();

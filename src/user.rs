@@ -8,9 +8,13 @@ use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 
 const NVS_NAMESPACE: &str = "codes";
 
+/// Abstraction to encapsulate the persistent database of users
 #[derive(Clone)]
 pub struct UserDB(Arc<Mutex<UserData>>);
 
+/// The database of users is BTreeSet of i32s that is persistet to
+/// flash memory everytime it is changed. On reset the memory structure
+/// will be loaded from flash again.
 struct UserData {
     nvs: EspNvs<NvsDefault>,
     codes: BTreeSet<i32>,

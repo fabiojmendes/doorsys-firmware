@@ -1,5 +1,6 @@
 use esp_idf_svc::hal::gpio::{Output, OutputPin, PinDriver};
 
+/// Simple container to encapsulate the door logic
 pub struct Door<'d, T: OutputPin> {
     driver: PinDriver<'d, T, Output>,
 }
