@@ -18,6 +18,7 @@ It's main responsibilities are:
 - Update it's internal database of valid codes based on messages received from
 the mqtt broker
 - Send health checks for observability
+- Keep the time up-to-date using NTP in order to keep audit logs consistent
 
 ## Necessary Tooling
 
