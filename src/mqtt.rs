@@ -12,7 +12,7 @@ use crate::user::UserDB;
 pub type MqttClient = EspMqttClient<'static>;
 
 /// Creates a new mqtt client and setup the book keeping
-/// the background thread to receive messages
+/// the background thread to receive and process incoming messages
 pub fn setup_mqtt(
     net_id: &str,
     user_db: UserDB,

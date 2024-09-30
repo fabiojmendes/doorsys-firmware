@@ -29,6 +29,8 @@ pub struct MqttConfig {
     pub password: String,
 }
 
+/// Struct that keeps track of the configurations of the firmware.
+/// It is also capable to start the configuration socket for config updates
 pub struct DoorsysConfig {
     nvs: EspNvs<NvsDefault>,
 }
@@ -50,6 +52,10 @@ impl DoorsysConfig {
         anyhow::bail!("No mqtt config found");
     }
 
+    /// Run the config server on port 23 and wait for new connections
+    /// Once a valid configuration is uploaded this method will apply
+    /// the configs, close the socket and return.
+    /// This is meant to be ran only during the first boot if not previous configs are found
     pub fn run_config_server(&mut self, wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<()> {
         let listener = TcpListener::bind("0.0.0.0:23")?;
         // accept connections and process them serially
@@ -61,7 +67,7 @@ impl DoorsysConfig {
                         log::error!("Error parsing configuration: {}", e);
                         writeln!(stream, "Error parsing configuration {}", e)?;
                     } else {
-                        // Close config server and continue with boot
+                        // Close config server and continue with boot proccess
                         break;
                     }
                 }
