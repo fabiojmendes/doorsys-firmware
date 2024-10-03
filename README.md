@@ -1,6 +1,4 @@
----
-vim: tw=80
----
+<!-- vim: set tw=80: -->
 
 # Doorsys Firmware
 
