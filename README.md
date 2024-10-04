@@ -2,23 +2,23 @@
 
 # Doorsys Firmware
 
-Doorsys is a door access control system for the esp32-c3 microcontroller. Check
-[Autosys](https://github.com/fabiojmendes/autosys) for an overview for the rest
-of the components on the platform.
+Doorsys is a door access control system for the esp32-c3 microcontroller. For an
+overview of the other components in the platform, check out
+[Autosys](https://github.com/fabiojmendes/autosys).
 
-This firmware is designed around the idea of multiple independent tasks that
-communicate using [mpsc](https://doc.rust-lang.org/std/sync/mpsc/index.html).
+This firmware is designed around the concept of multiple independent tasks that
+communicate via multi-producer, single-consumer
+([mpsc](https://doc.rust-lang.org/std/sync/mpsc/index.html)) channels.
 
 Its main responsibilities are:
 
-- Activate the relay circuit to open the door on a successful input
-- Read user input from the wiegand reader and determine if the code is valid or
-  not
-- Send audit information via MQTT of all entry attempts
-- Update its internal database of valid codes based on messages received from
+- Activating the relay circuit to open the door upon successful input
+- Reading user input from the Wiegand reader and validating the user code
+- Sending audit information via MQTT for all entry attempts
+- Updating its internal database of valid codes based on messages received from
   the MQTT broker
-- Send health checks for observability
-- Keep the time up-to-date using NTP in order to keep audit logs consistent
+- Sending health checks for observability
+- Keeping the time up-to-date using NTP to ensure consistent audit logs
 
 ## Necessary Tooling
 
