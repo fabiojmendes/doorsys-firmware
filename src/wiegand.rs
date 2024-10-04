@@ -178,8 +178,8 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
         Ok((boxed, reader_rx))
     }
 
-    fn init(reader: &mut Self) -> anyhow::Result<()> {
-        let reader_ptr = reader as *mut _ as *mut c_void;
+    fn init(&mut self) -> anyhow::Result<()> {
+        let reader_ptr = self as *mut _ as *mut c_void;
 
         let timer_config = esp_timer_create_args_t {
             name: CString::new("wiegand")?.into_raw(),
@@ -189,11 +189,11 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             skip_unhandled_events: true,
         };
 
-        esp!(unsafe { esp_timer_create(&timer_config, &mut reader.timer) })?;
+        esp!(unsafe { esp_timer_create(&timer_config, &mut self.timer) })?;
 
         // Configures d0 and d1
         let io_conf = gpio_config_t {
-            pin_bit_mask: (1 << reader.d0_gpio.pin() | 1 << reader.d1_gpio.pin()),
+            pin_bit_mask: (1 << self.d0_gpio.pin() | 1 << self.d1_gpio.pin()),
             mode: gpio_mode_t_GPIO_MODE_INPUT,
             pull_up_en: true.into(),
             pull_down_en: false.into(),
@@ -207,12 +207,12 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             // Registers our function with the generic GPIO interrupt handler
             // This assumes gpio_install_isr_service was called before
             esp!(gpio_isr_handler_add(
-                reader.d0_gpio.pin(),
+                self.d0_gpio.pin(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
             esp!(gpio_isr_handler_add(
-                reader.d1_gpio.pin(),
+                self.d1_gpio.pin(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
