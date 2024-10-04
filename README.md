@@ -90,3 +90,6 @@ validate the code. At any point the `*` key may be used to cancel an erroneous
 input. If an invalid or incomplete pin is entered, a rapid intermittent sound
 will be played notifying the user of the error. The same behavior is true for an
 invalid badge.
+
+Once a user starts typing a pin, they will have 10 seconds to complete the
+sequence otherwise the operation will be cancelled.
