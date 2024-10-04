@@ -1,6 +1,8 @@
 use core::ffi::c_void;
 use std::{
     ffi::CString,
+    marker::PhantomPinned,
+    pin::Pin,
     ptr,
     sync::mpsc::{self, Receiver, Sender},
 };
@@ -141,12 +143,12 @@ impl Packet {
 /// // Installs the generic GPIO interrupt handler
 /// esp!(unsafe { gpio_install_isr_service(ESP_INTR_FLAG_IRAM as i32) })?;
 ///
-/// let reader = Reader::new(d0, d1);
-/// // init must be called before any interaction with the reader
-/// reader.init();
-/// for packet in reader {
+/// let (_reader, channel) = Reader::new(d0, d1)?;
+/// loop {
+///     let packet = channel.recv()?;
 ///     // proccess packet
 /// }
+///
 /// ```
 pub struct Reader<D0: InputPin, D1: InputPin> {
     bits: usize,
@@ -155,31 +157,29 @@ pub struct Reader<D0: InputPin, D1: InputPin> {
     d1_gpio: D1,
     timer: esp_timer_handle_t,
     reader_tx: Sender<Packet>,
+    _marker: PhantomPinned,
 }
 
 impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
-    pub fn new(d0_gpio: D0, d1_gpio: D1) -> (Self, Receiver<Packet>) {
+    pub fn new(d0_gpio: D0, d1_gpio: D1) -> anyhow::Result<(Pin<Box<Self>>, Receiver<Packet>)> {
         let (reader_tx, reader_rx) = mpsc::channel();
-        (
-            Reader {
-                d0_gpio,
-                d1_gpio,
-                data: [0; BUFFER_SIZE],
-                bits: 0,
-                timer: ptr::null_mut(),
-                reader_tx,
-            },
-            reader_rx,
-        )
+        let reader = Reader {
+            d0_gpio,
+            d1_gpio,
+            data: [0; BUFFER_SIZE],
+            bits: 0,
+            timer: ptr::null_mut(),
+            reader_tx,
+            _marker: PhantomPinned,
+        };
+        let mut boxed = Box::pin(reader);
+        let reader_ref = unsafe { boxed.as_mut().get_unchecked_mut() };
+        Reader::init(reader_ref)?;
+        Ok((boxed, reader_rx))
     }
 
-    /// This implementation is a little messy and may contain UB.
-    /// Ideally a fully initilized instance should be returned from the new
-    /// function.
-    ///
-    /// Investigate a possible implementation using Pin
-    pub fn init(&mut self) -> anyhow::Result<()> {
-        let reader_ptr = self as *mut _ as *mut c_void;
+    fn init(reader: &mut Self) -> anyhow::Result<()> {
+        let reader_ptr = reader as *mut _ as *mut c_void;
 
         let timer_config = esp_timer_create_args_t {
             name: CString::new("wiegand")?.into_raw(),
@@ -189,11 +189,11 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             skip_unhandled_events: true,
         };
 
-        esp!(unsafe { esp_timer_create(&timer_config, &mut self.timer) })?;
+        esp!(unsafe { esp_timer_create(&timer_config, &mut reader.timer) })?;
 
         // Configures d0 and d1
         let io_conf = gpio_config_t {
-            pin_bit_mask: (1 << self.d0_gpio.pin() | 1 << self.d1_gpio.pin()),
+            pin_bit_mask: (1 << reader.d0_gpio.pin() | 1 << reader.d1_gpio.pin()),
             mode: gpio_mode_t_GPIO_MODE_INPUT,
             pull_up_en: true.into(),
             pull_down_en: false.into(),
@@ -207,12 +207,12 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             // Registers our function with the generic GPIO interrupt handler
             // This assumes gpio_install_isr_service was called before
             esp!(gpio_isr_handler_add(
-                self.d0_gpio.pin(),
+                reader.d0_gpio.pin(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
             esp!(gpio_isr_handler_add(
-                self.d1_gpio.pin(),
+                reader.d1_gpio.pin(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;

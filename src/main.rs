@@ -95,8 +95,8 @@ fn setup_reader(
     signal_driver.set_high()?;
 
     thread::spawn(move || {
-        let (mut reader, channel) = Reader::new(d0_gpio, d1_gpio);
-        reader.init().unwrap();
+        let (_reader, channel) =
+            Reader::new(d0_gpio, d1_gpio).expect("Error initializing wiegand reader");
 
         let mut keys = Vec::with_capacity(MAX_PIN_LENGTH);
 
