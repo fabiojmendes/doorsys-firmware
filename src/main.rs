@@ -33,6 +33,7 @@ use crate::user::UserDB;
 use crate::wiegand::Reader;
 
 const MAX_PIN_LENGTH: usize = 8;
+const PIN_TIMEOUT: Duration = Duration::from_secs(10);
 const STAR_KEY: u8 = 0x0A;
 const HASH_KEY: u8 = 0x0B;
 const DOOR_OPEN_DELAY: Duration = Duration::from_secs(4);
@@ -94,14 +95,14 @@ fn setup_reader(
     signal_driver.set_high()?;
 
     thread::spawn(move || {
-        let mut reader = Reader::new(d0_gpio, d1_gpio);
+        let (mut reader, channel) = Reader::new(d0_gpio, d1_gpio);
         reader.init().unwrap();
 
         let mut keys = Vec::with_capacity(MAX_PIN_LENGTH);
 
         // Reads the queue in a loop.
-        for packet in reader {
-            match packet {
+        loop {
+            match channel.recv_timeout(PIN_TIMEOUT) {
                 Ok(Packet::Key { key }) => {
                     if key == HASH_KEY {
                         let pin = keys_to_int(&keys);
@@ -154,10 +155,10 @@ fn setup_reader(
                     if let Err(e) = audit_tx.send(audit) {
                         log::error!("error sending audit record: {}", e);
                     }
-                    keys.clear();
                     if let Err(e) = keypad_feedback(success, &mut signal_driver) {
                         log::warn!("error playing feedback: {}", e);
                     }
+                    keys.clear();
                 }
                 Ok(Packet::Unknown { bits, data }) => {
                     log::warn!("pattern not recognized bits: {}, data: {:02X?}", bits, data);

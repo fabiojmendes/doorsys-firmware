@@ -2,8 +2,7 @@ use core::ffi::c_void;
 use std::{
     ffi::CString,
     ptr,
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    time::Duration,
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 use esp_idf_svc::{
@@ -19,7 +18,6 @@ use esp_idf_svc::{
 
 const WIEGAND_TIMEOUT: u64 = 50000; // 50ms
 const BUFFER_SIZE: usize = 4;
-const PIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[link_section = ".iram0.text"]
 unsafe extern "C" fn wiegand_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
@@ -157,21 +155,22 @@ pub struct Reader<D0: InputPin, D1: InputPin> {
     d1_gpio: D1,
     timer: esp_timer_handle_t,
     reader_tx: Sender<Packet>,
-    reader_rx: Receiver<Packet>,
 }
 
 impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
-    pub fn new(d0_gpio: D0, d1_gpio: D1) -> Self {
+    pub fn new(d0_gpio: D0, d1_gpio: D1) -> (Self, Receiver<Packet>) {
         let (reader_tx, reader_rx) = mpsc::channel();
-        Reader {
-            d0_gpio,
-            d1_gpio,
-            data: [0; BUFFER_SIZE],
-            bits: 0,
-            timer: ptr::null_mut(),
-            reader_tx,
+        (
+            Reader {
+                d0_gpio,
+                d1_gpio,
+                data: [0; BUFFER_SIZE],
+                bits: 0,
+                timer: ptr::null_mut(),
+                reader_tx,
+            },
             reader_rx,
-        }
+        )
     }
 
     /// This implementation is a little messy and may contain UB.
@@ -237,14 +236,6 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
         }
         self.data = [0; BUFFER_SIZE];
         self.bits = 0;
-    }
-}
-
-impl<D0: InputPin, D1: InputPin> Iterator for Reader<D0, D1> {
-    type Item = Result<Packet, RecvTimeoutError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(self.reader_rx.recv_timeout(PIN_TIMEOUT))
     }
 }
 
