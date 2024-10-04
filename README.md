@@ -75,3 +75,18 @@ espflash erase-region --port /dev/port 0x9000 0x6000
 This command will erase the NVS partition and wipe all configurations. On next
 reboot Doorsys will restart AP mode so you can follow the steps for
 [initial configuration](#initial-configuration).
+
+## Usage
+
+After completing the initial configuration, and making the connections as
+described in the [hardware](https://github.com/fabiojmendes/doorsys-hardware),
+the system should be ready to use.
+
+To operate the door using the keypad, the user should enter the 6 digits pins
+followed by a `#` key. Once a valid sequence is entered, the keypad will emit a
+sound the relay will be activated for 4 seconds allowing the user to open the
+door. Tapping a badge doesn't require a `#` press as it will automatically
+validate the code. At any point the `*` key may be used to cancel an erroneous
+input. If an invalid or incomplete pin is entered, a rapid intermittent sound
+will be played notifying the user of the error. The same behavior is true for an
+invalid badge.
