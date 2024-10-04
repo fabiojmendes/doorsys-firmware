@@ -34,15 +34,13 @@ unsafe extern "C" fn wiegand_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_v
         return;
     }
 
-    let timer = reader.timer.unwrap();
-
-    esp_timer_stop(timer);
+    esp_timer_stop(reader.timer);
 
     let value = if d0 == 0 { 0 } else { 0x80 };
     reader.data[reader.bits / 8] |= value >> (reader.bits % 8);
     reader.bits += 1;
 
-    esp_timer_start_once(timer, WIEGAND_TIMEOUT);
+    esp_timer_start_once(reader.timer, WIEGAND_TIMEOUT);
 }
 
 unsafe extern "C" fn timer_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
@@ -146,6 +144,7 @@ impl Packet {
 /// esp!(unsafe { gpio_install_isr_service(ESP_INTR_FLAG_IRAM as i32) })?;
 ///
 /// let reader = Reader::new(d0, d1);
+/// // init must be called before any interaction with the reader
 /// reader.init();
 /// for packet in reader {
 ///     // proccess packet
@@ -156,7 +155,7 @@ pub struct Reader<D0: InputPin, D1: InputPin> {
     data: [u8; BUFFER_SIZE],
     d0_gpio: D0,
     d1_gpio: D1,
-    timer: Option<esp_timer_handle_t>,
+    timer: esp_timer_handle_t,
     reader_tx: Sender<Packet>,
     reader_rx: Receiver<Packet>,
 }
@@ -169,12 +168,17 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             d1_gpio,
             data: [0; BUFFER_SIZE],
             bits: 0,
-            timer: None,
+            timer: ptr::null_mut(),
             reader_tx,
             reader_rx,
         }
     }
 
+    /// This implementation is a little messy and may contain UB.
+    /// Ideally a fully initilized instance should be returned from the new
+    /// function.
+    ///
+    /// Investigate a possible implementation using Pin
     pub fn init(&mut self) -> anyhow::Result<()> {
         let reader_ptr = self as *mut _ as *mut c_void;
 
@@ -186,9 +190,7 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             skip_unhandled_events: true,
         };
 
-        let mut timer_handle = ptr::null_mut();
-        esp!(unsafe { esp_timer_create(&timer_config, &mut timer_handle) })?;
-        self.timer = Some(timer_handle);
+        esp!(unsafe { esp_timer_create(&timer_config, &mut self.timer) })?;
 
         // Configures d0 and d1
         let io_conf = gpio_config_t {
@@ -221,10 +223,8 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
     }
 
     fn stop(&mut self) {
-        if let Some(timer) = self.timer {
-            unsafe { esp_timer_stop(timer) };
-        }
         unsafe {
+            esp_timer_stop(self.timer);
             gpio_set_intr_type(self.d0_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
             gpio_set_intr_type(self.d1_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
         }
@@ -251,10 +251,9 @@ impl<D0: InputPin, D1: InputPin> Iterator for Reader<D0, D1> {
 impl<D0: InputPin, D1: InputPin> Drop for Reader<D0, D1> {
     fn drop(&mut self) {
         unsafe {
-            if let Some(timer) = self.timer {
-                esp_timer_stop(timer);
-                esp_timer_delete(timer);
-            }
+            esp_timer_stop(self.timer);
+            esp_timer_delete(self.timer);
+
             gpio_isr_handler_remove(self.d0_gpio.pin());
             gpio_reset_pin(self.d0_gpio.pin());
 
