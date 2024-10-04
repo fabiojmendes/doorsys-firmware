@@ -12,12 +12,10 @@ impl<T: OutputPin> Door<'_, T> {
     }
 
     pub fn open(&mut self) -> anyhow::Result<()> {
-        self.driver.set_high()?;
-        Ok(())
+        Ok(self.driver.set_high()?)
     }
 
     pub fn close(&mut self) -> anyhow::Result<()> {
-        self.driver.set_low()?;
-        Ok(())
+        Ok(self.driver.set_low()?)
     }
 }

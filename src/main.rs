@@ -101,6 +101,8 @@ fn setup_reader(
         let mut keys = Vec::with_capacity(MAX_PIN_LENGTH);
 
         // Reads the queue in a loop.
+        // If a pin sequence is not entered in PIN_TIMEOUT time
+        // it will be cancelled
         loop {
             match channel.recv_timeout(PIN_TIMEOUT) {
                 Ok(Packet::Key { key }) => {
