@@ -2,6 +2,12 @@
 
 # Doorsys firmware
 
+> [!NOTE]
+>
+> The [esp-hal](https://github.com/esp-rs/esp-hal) is now officially supported
+> by Espressif Systems. Eventually this firmware should be migrated to that
+> version using the `no_std` abstraction layer
+
 Doorsys is a door access control system for the esp32-c3 microcontroller. For an
 overview of the other components in the platform, check out
 [Autosys](https://github.com/fabiojmendes/autosys).
