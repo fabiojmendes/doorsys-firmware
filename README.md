@@ -1,6 +1,6 @@
 <!-- vim: set tw=80: -->
 
-# Doorsys Firmware
+# Doorsys firmware
 
 Doorsys is a door access control system for the esp32-c3 microcontroller. For an
 overview of the other components in the platform, check out
@@ -20,14 +20,14 @@ Its main responsibilities are:
 - Sending health checks for observability
 - Keeping the time up-to-date using NTP to ensure consistent audit logs
 
-## Necessary Tooling
+## Necessary tooling
 
 Install the necessary tooling as described in the
 [prerequisites section](https://github.com/esp-rs/esp-idf-template#prerequisites)
 of the esp-idf-template. You can opt for the RISC-V alternative path as this
 project is meant to run on an ESP32-C3 microcontroller.
 
-## Flashing the Firmware
+## Flashing the firmware
 
 ```shell
 # Optionally wipe flash before starting
@@ -36,9 +36,9 @@ espflash erase-flash --port /dev/port
 espflash flash --port /dev/port doorsys-firmware-<version>.elf
 ```
 
-## Initial Configuration
+## Initial configuration
 
-On first launch Doorsys, will need to be provisioned with configurations for the
+On first launch Doorsys needs to be provisioned with configurations for the
 Wi-Fi network and also an MQTT server to communicate with.
 
 Create a TOML configuration file using the example below as reference. For
@@ -57,14 +57,14 @@ password = "password"
 url = "mqtt://mqtt.example.com:1883"
 ```
 
-Upload a configuration file by connecting to the default hotspot e.g.,
+Upload a configuration file by connecting to the default hotspot, for example:
 `ESP_AABBCC` on port 23
 
 ```shell
 nc -w1 192.168.71.1 23 < config.toml
 ```
 
-## Reset to Factory
+## Reset to factory
 
 To reset the device configuration execute
 
@@ -72,8 +72,8 @@ To reset the device configuration execute
 espflash erase-region --port /dev/port 0x9000 0x6000
 ```
 
-This command will erase the NVS partition and wipe all configurations. On next
-reboot Doorsys will restart AP mode so you can follow the steps for
+This command erases the NVS partition and wipes all configurations. On next
+reboot, Doorsys restarts in AP mode so you can follow the steps for
 [initial configuration](#initial-configuration).
 
 ## Usage
@@ -82,14 +82,13 @@ After completing the initial configuration, and making the connections as
 described in the [hardware](https://github.com/fabiojmendes/doorsys-hardware),
 the system should be ready to use.
 
-To operate the door using the keypad, the user should enter the 6 digits pins
-followed by a `#` key. Once a valid sequence is entered, the keypad will emit a
-sound the relay will be activated for 4 seconds allowing the user to open the
-door. Tapping a badge doesn't require a `#` press as it will automatically
-validate the code. At any point the `*` key may be used to cancel an erroneous
-input. If an invalid or incomplete pin is entered, a rapid intermittent sound
-will be played notifying the user of the error. The same behavior is true for an
-invalid badge.
+To operate the door using the keypad, the user should enter the 6 digits pin
+followed by the `#` key. Once a valid sequence is entered, the keypad emits a
+sound and the relay is activated for 4 seconds allowing the user to open the
+door. Tapping a badge doesn't require a `#` press as it automatically validates
+the code. At any point the `*` key may be used to cancel an erroneous input. If
+an invalid or incomplete pin is entered, a rapid intermittent sound is played
+notifying the user of the error. The same behavior is true for an invalid badge.
 
-Once a user starts typing a pin, they will have 10 seconds to complete the
-sequence otherwise the operation will be cancelled.
+Once a user starts typing a pin, they have 10 seconds to complete the sequence
+otherwise the operation is cancelled.
