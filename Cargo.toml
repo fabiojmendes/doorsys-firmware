@@ -31,7 +31,10 @@ doorsys-protocol = { git = "https://github.com/fabiojmendes/doorsys-protocol.git
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
-toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+toml = { version = "0.9", default-features = false, features = [
+  "parse",
+  "serde",
+] }
 
 [build-dependencies]
 embuild = "0.33"
