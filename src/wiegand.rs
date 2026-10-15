@@ -78,11 +78,7 @@ fn parity_check_26bits(mut rfid: u32) -> bool {
         count += rfid & 1;
         rfid >>= 1;
     }
-    if count % 2 == 1 {
-        return false;
-    }
-
-    true
+    count % 2 != 1
 }
 
 /// Packet read from the wiegand interface
