@@ -19,4 +19,3 @@ impl<'d> Door<'d> {
         Ok(self.driver.set_low()?)
     }
 }
-
