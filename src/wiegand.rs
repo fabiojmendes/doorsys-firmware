@@ -24,8 +24,8 @@ const BUFFER_SIZE: usize = 4;
 #[link_section = ".iram0.text"]
 unsafe extern "C" fn wiegand_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
     let reader = &mut *(arg as *mut Reader<D0, D1>);
-    let d0 = gpio_get_level(reader.d0_gpio.pin());
-    let d1 = gpio_get_level(reader.d1_gpio.pin());
+    let d0 = gpio_get_level(reader.d0_gpio.pin().into());
+    let d1 = gpio_get_level(reader.d1_gpio.pin().into());
     if d0 == d1 {
         return;
     }
@@ -207,12 +207,12 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
             // Registers our function with the generic GPIO interrupt handler
             // This assumes gpio_install_isr_service was called before
             esp!(gpio_isr_handler_add(
-                self.d0_gpio.pin(),
+                self.d0_gpio.pin().into(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
             esp!(gpio_isr_handler_add(
-                self.d1_gpio.pin(),
+                self.d1_gpio.pin().into(),
                 Some(wiegand_interrupt::<D0, D1>),
                 reader_ptr
             ))?;
@@ -224,15 +224,15 @@ impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
     fn stop(&mut self) {
         unsafe {
             esp_timer_stop(self.timer);
-            gpio_set_intr_type(self.d0_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
-            gpio_set_intr_type(self.d1_gpio.pin(), gpio_int_type_t_GPIO_INTR_DISABLE);
+            gpio_set_intr_type(self.d0_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_DISABLE);
+            gpio_set_intr_type(self.d1_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_DISABLE);
         }
     }
 
     fn reset(&mut self) {
         unsafe {
-            gpio_set_intr_type(self.d0_gpio.pin(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
-            gpio_set_intr_type(self.d1_gpio.pin(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
+            gpio_set_intr_type(self.d0_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
+            gpio_set_intr_type(self.d1_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
         }
         self.data = [0; BUFFER_SIZE];
         self.bits = 0;
@@ -245,11 +245,11 @@ impl<D0: InputPin, D1: InputPin> Drop for Reader<D0, D1> {
             esp_timer_stop(self.timer);
             esp_timer_delete(self.timer);
 
-            gpio_isr_handler_remove(self.d0_gpio.pin());
-            gpio_reset_pin(self.d0_gpio.pin());
+            gpio_isr_handler_remove(self.d0_gpio.pin().into());
+            gpio_reset_pin(self.d0_gpio.pin().into());
 
-            gpio_isr_handler_remove(self.d1_gpio.pin());
-            gpio_reset_pin(self.d1_gpio.pin());
+            gpio_isr_handler_remove(self.d1_gpio.pin().into());
+            gpio_reset_pin(self.d1_gpio.pin().into());
         }
     }
 }

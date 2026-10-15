@@ -44,7 +44,7 @@ impl DoorsysConfig {
 
     pub fn read_mqtt_configs(&self) -> anyhow::Result<MqttConfig> {
         let mut buf = [0; 256];
-        if let Ok(Some(slice)) = self.nvs.get_raw("mqtt", &mut buf) {
+        if let Ok(Some(slice)) = self.nvs.get_blob("mqtt", &mut buf) {
             let mqtt_config = postcard::from_bytes(slice)?;
             log::info!("bytes read for mqtt configuration");
             return Ok(mqtt_config);
@@ -89,7 +89,7 @@ impl DoorsysConfig {
         log::info!("New config\n{}", file);
         let config: Config = toml::from_str(&file)?;
         let payload = postcard::to_allocvec(&config.mqtt)?;
-        self.nvs.set_raw("mqtt", &payload)?;
+        self.nvs.set_blob("mqtt", &payload)?;
 
         let wifi_config = ClientConfiguration {
             ssid: config.wifi.ssid.as_str().try_into().unwrap(),

@@ -1,12 +1,12 @@
 use esp_idf_svc::hal::gpio::{Output, OutputPin, PinDriver};
 
 /// Simple container to encapsulate the door logic
-pub struct Door<'d, T: OutputPin> {
-    driver: PinDriver<'d, T, Output>,
+pub struct Door<'d> {
+    driver: PinDriver<'d, Output>,
 }
 
-impl<T: OutputPin> Door<'_, T> {
-    pub fn new(pin: T) -> anyhow::Result<Self> {
+impl<'d> Door<'d> {
+    pub fn new(pin: impl OutputPin + 'd) -> anyhow::Result<Self> {
         let driver = PinDriver::output(pin)?;
         Ok(Door { driver })
     }
@@ -19,3 +19,4 @@ impl<T: OutputPin> Door<'_, T> {
         Ok(self.driver.set_low()?)
     }
 }
+

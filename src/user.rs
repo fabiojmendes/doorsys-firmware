@@ -23,7 +23,7 @@ struct UserData {
 fn persist(data: &mut UserData) -> anyhow::Result<()> {
     let buf = postcard::to_allocvec(&data.codes).context("encoding failure")?;
     data.nvs
-        .set_raw(NVS_NAMESPACE, &buf)
+        .set_blob(NVS_NAMESPACE, &buf)
         .context("nvs failure")?;
     Ok(())
 }
@@ -34,7 +34,7 @@ impl UserDB {
         let blob_size = nvs.blob_len(NVS_NAMESPACE)?.unwrap_or(0);
         let mut buf = vec![0; blob_size];
         let maybe_blob = nvs
-            .get_raw(NVS_NAMESPACE, &mut buf)
+            .get_blob(NVS_NAMESPACE, &mut buf)
             .context("error loading nvs")?;
 
         match maybe_blob {

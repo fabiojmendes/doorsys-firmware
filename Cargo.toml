@@ -19,7 +19,7 @@ opt-level = "z"
 
 [dependencies]
 log = { version = "0.4", default-features = false }
-esp-idf-svc = { version = "0.51", features = [
+esp-idf-svc = { version = "0.53", features = [
   "alloc",
   "binstart",
   "std",
@@ -31,7 +31,7 @@ doorsys-protocol = { git = "https://github.com/fabiojmendes/doorsys-protocol.git
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
-toml = { version = "0.9", default-features = false, features = [
+toml = { version = "1.0", default-features = false, features = [
   "parse",
   "serde",
 ] }

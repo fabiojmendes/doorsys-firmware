@@ -16,7 +16,7 @@ const RECONNECT_COOLDOWN: Duration = Duration::from_secs(5);
 /// If no previous wifi configuration is found, it will start in
 /// AP mode and launch the configuration server and wait for connections.
 pub fn setup_wireless(
-    modem: Modem,
+    modem: Modem<'static>,
     sysloop: EspEventLoop<System>,
     nvs_part: EspNvsPartition<NvsDefault>,
     doorsys_config: &mut DoorsysConfig,

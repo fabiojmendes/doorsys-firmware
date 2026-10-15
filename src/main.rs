@@ -10,8 +10,8 @@ mod wiegand;
 use config::DoorsysConfig;
 use doorsys_protocol::{Audit, CodeType};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::gpio::{InputPin, Output, OutputPin, PinDriver};
-use esp_idf_svc::hal::prelude::Peripherals;
+use esp_idf_svc::hal::gpio::{InputPin, OutputMode, OutputPin, PinDriver};
+use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::mqtt::client::QoS;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{
@@ -38,7 +38,7 @@ const STAR_KEY: u8 = 0x0A;
 const HASH_KEY: u8 = 0x0B;
 const DOOR_OPEN_DELAY: Duration = Duration::from_secs(4);
 
-fn setup_door(pin: impl OutputPin, door_rx: Receiver<()>) -> anyhow::Result<()> {
+fn setup_door(pin: impl OutputPin + 'static, door_rx: Receiver<()>) -> anyhow::Result<()> {
     let mut door = door::Door::new(pin)?;
 
     thread::spawn(move || loop {
@@ -57,10 +57,7 @@ fn setup_door(pin: impl OutputPin, door_rx: Receiver<()>) -> anyhow::Result<()> 
 }
 
 /// Plays a sound when the door opens or the code is invalid
-fn keypad_feedback(
-    success: bool,
-    pin: &mut PinDriver<'_, impl OutputPin, Output>,
-) -> anyhow::Result<()> {
+fn keypad_feedback(success: bool, pin: &mut PinDriver<'_, impl OutputMode>) -> anyhow::Result<()> {
     for _ in 0..8 {
         if success {
             pin.set_low()?;
@@ -87,9 +84,9 @@ fn setup_reader(
     door_tx: Sender<()>,
     user_db: UserDB,
     audit_tx: Sender<Audit>,
-    d0_gpio: impl InputPin,
-    d1_gpio: impl InputPin,
-    signal_pin: impl OutputPin,
+    d0_gpio: impl InputPin + 'static,
+    d1_gpio: impl InputPin + 'static,
+    signal_pin: impl OutputPin + 'static,
 ) -> anyhow::Result<()> {
     let mut signal_driver = PinDriver::output_od(signal_pin)?;
     signal_driver.set_high()?;
