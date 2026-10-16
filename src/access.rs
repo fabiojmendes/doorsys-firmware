@@ -6,7 +6,7 @@
 
 use alloc::format;
 use defmt::{error, info, warn};
-use doorsys_protocol::{Audit, CodeType};
+use doorsys_protocol::{Audit, CodeType, Timestamp};
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::Output;
@@ -52,7 +52,10 @@ async fn keypad_feedback(success: bool, pin: &mut Output<'_>) {
 
 fn enqueue_audit(device_id: &str, code: i32, code_type: CodeType, success: bool) {
     let audit = Audit {
-        timestamp: clock::now_unix_secs(),
+        timestamp: Timestamp {
+            secs_since_epoch: clock::now_unix_secs(),
+            nanos_since_epoch: 0,
+        },
         code,
         code_type,
         success,
