@@ -532,6 +532,7 @@ dependencies = [
 [[package]]
 name = "doorsys-protocol"
 version = "0.3.0"
+source = "git+https://github.com/fabiojmendes/doorsys-protocol.git?tag=v0.3.0#777593f3a3418b3faca10f83ad92652ba12c70b5"
 dependencies = [
  "serde",
 ]
