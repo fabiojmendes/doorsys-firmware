@@ -21,20 +21,18 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
+          targets: riscv32imc-unknown-none-elf
           components: rust-src, clippy, rustfmt
 
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
 
-      - name: Install ldproxy
-        run: cargo install ldproxy
-
       - name: Run fmt command
         run: cargo fmt --all -- --check --color always
 
       - name: Run clippy command
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+        run: cargo clippy --release -- -D warnings
 
   deploy:
     if: github.ref_type == 'tag'
@@ -66,14 +64,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
+          targets: riscv32imc-unknown-none-elf
           components: rust-src
 
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
-
-      - name: Install ldproxy
-        run: cargo install ldproxy
 
       - name: Run build command
         run: cargo build --release
@@ -81,7 +77,7 @@ jobs:
       - name: Package
         run: |
           mkdir $PACKAGE_NAME
-          cp target/riscv32imc-esp-espidf/release/doorsys-firmware ${PACKAGE_NAME}/
+          cp target/riscv32imc-unknown-none-elf/release/doorsys-firmware ${PACKAGE_NAME}/
           cp -r README.md LICENSE $PACKAGE_NAME/
           tar -czvf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME
 
