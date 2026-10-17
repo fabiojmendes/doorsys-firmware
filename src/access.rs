@@ -4,7 +4,7 @@
 //! the door relay on valid entry, plays audible/visual feedback on the keypad signal line, and
 //! enqueues [`Audit`] records for MQTT publication.
 
-use alloc::format;
+use core::fmt::Write as _;
 use defmt::{error, info, warn};
 use doorsys_protocol::{Audit, CodeType, Timestamp};
 use embassy_futures::select::{Either, select};
@@ -60,10 +60,15 @@ fn enqueue_audit(device_id: &str, code: i32, code_type: CodeType, success: bool)
         code_type,
         success,
     };
-    match postcard::to_allocvec(&audit) {
+    let mut buf = [0u8; 32];
+    match postcard::to_slice(&audit, &mut buf) {
         Ok(payload) => {
-            let topic = format!("doorsys/audit/{}", device_id);
-            mqtt::try_enqueue(topic, payload, PublishQoS::AtLeastOnce);
+            let mut topic = heapless::String::<{ mqtt::MAX_TOPIC_LEN }>::new();
+            if write!(topic, "doorsys/audit/{}", device_id).is_err() {
+                error!("Audit topic too long for device id {}", device_id);
+                return;
+            }
+            mqtt::try_enqueue(&topic, payload, PublishQoS::AtLeastOnce);
         }
         Err(e) => {
             error!("Error encoding audit record: {:?}", e);

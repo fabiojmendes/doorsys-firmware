@@ -4,9 +4,9 @@
 //! `UsbSerialJtag` peripheral so the shell never blocks the Embassy executor while waiting for host
 //! terminal reads or writes.
 
-use alloc::vec::Vec;
 use core::{cell::RefCell, convert::Infallible};
 
+use defmt::warn;
 use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
 use esp_hal::{
     Async,
@@ -14,30 +14,39 @@ use esp_hal::{
     usb::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx},
 };
 
+/// Fixed-capacity output buffer shared between [`BufferedWriter`] and the shell loop.
+pub type TxBuffer<const N: usize> = RefCell<heapless::Vec<u8, N>>;
+
 /// In-memory byte sink implementing `embedded_io_06::Write` for `embedded-cli`.
-pub struct BufferedWriter<'a> {
-    buf: &'a RefCell<Vec<u8>>,
+///
+/// Output exceeding the buffer capacity `N` before the next [`UsbShellIo::drain`] is dropped.
+pub struct BufferedWriter<'a, const N: usize> {
+    buf: &'a TxBuffer<N>,
 }
 
-impl<'a> BufferedWriter<'a> {
-    pub fn new(buf: &'a RefCell<Vec<u8>>) -> Self {
+impl<'a, const N: usize> BufferedWriter<'a, N> {
+    pub fn new(buf: &'a TxBuffer<N>) -> Self {
         Self { buf }
     }
 }
 
-impl embedded_io_06::ErrorType for BufferedWriter<'_> {
+impl<const N: usize> embedded_io_06::ErrorType for BufferedWriter<'_, N> {
     type Error = Infallible;
 }
 
-impl embedded_io_06::Write for BufferedWriter<'_> {
+impl<const N: usize> embedded_io_06::Write for BufferedWriter<'_, N> {
     fn write(&mut self, data: &[u8]) -> Result<usize, Self::Error> {
         let mut out = self.buf.borrow_mut();
+        let mut overflow = false;
         // Translate bare `\n` to `\r\n` for standard serial terminals when not already preceded by `\r`.
         for &b in data {
             if b == b'\n' && out.last().copied() != Some(b'\r') {
-                out.push(b'\r');
+                overflow |= out.push(b'\r').is_err();
             }
-            out.push(b);
+            overflow |= out.push(b).is_err();
+        }
+        if overflow {
+            warn!("Shell output buffer full ({} bytes); output truncated", N);
         }
         Ok(data.len())
     }
@@ -72,5 +81,34 @@ impl UsbShellIo {
         }
         let _ = self.tx.write_all(data).await;
         let _ = self.tx.flush().await;
+    }
+
+    /// Write out and clear everything accumulated in `buf`.
+    ///
+    /// Copies in small stack chunks so no `RefCell` borrow is held across an `.await`. Must only
+    /// be called from the task that owns the [`BufferedWriter`] (nothing else may write to `buf`
+    /// concurrently).
+    pub async fn drain<const N: usize>(&mut self, buf: &TxBuffer<N>) {
+        const CHUNK: usize = 64;
+        let mut offset = 0;
+        loop {
+            let mut chunk = [0u8; CHUNK];
+            let n = {
+                let pending = buf.borrow();
+                let rest = pending.get(offset..).unwrap_or(&[]);
+                let n = rest.len().min(CHUNK);
+                chunk[..n].copy_from_slice(&rest[..n]);
+                n
+            };
+            if n == 0 {
+                break;
+            }
+            let _ = self.tx.write_all(&chunk[..n]).await;
+            offset += n;
+        }
+        if offset > 0 {
+            buf.borrow_mut().clear();
+            let _ = self.tx.flush().await;
+        }
     }
 }
