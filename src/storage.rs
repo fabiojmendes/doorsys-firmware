@@ -271,24 +271,62 @@ impl Storage {
         Ok(())
     }
 
-    /// Collect all user codes currently stored in flash.
+    /// Collect all user codes currently stored in flash, sorted and deduplicated.
     pub async fn list_user_codes(&mut self) -> Result<Vec<i32>, StorageError> {
         let mut codes = Vec::new();
         let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
         while let Some((key, _val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
-            if let StorageKey::UserCode(code) = key
-                && !codes.contains(&code)
-            {
+            if let StorageKey::UserCode(code) = key {
                 codes.push(code);
             }
         }
         codes.sort_unstable();
+        codes.dedup();
         Ok(codes)
     }
 
-    /// Count all user codes currently stored in flash.
+    /// Fetch up to `N` user codes strictly greater than `after` in ascending order without
+    /// allocating on the heap.
+    pub async fn list_user_codes_page<const N: usize>(
+        &mut self,
+        after: Option<i32>,
+    ) -> Result<heapless::Vec<i32, N>, StorageError> {
+        let mut page = heapless::Vec::<i32, N>::new();
+        if N == 0 {
+            return Ok(page);
+        }
+
+        let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
+        while let Some((key, _val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
+            let StorageKey::UserCode(code) = key else {
+                continue;
+            };
+            if after.is_some_and(|prev| code <= prev) {
+                continue;
+            }
+            if page.is_full() && page.last().is_some_and(|&max| code >= max) {
+                continue;
+            }
+            if let Err(pos) = page.binary_search(&code) {
+                if page.is_full() {
+                    page.pop();
+                }
+                let _ = page.insert(pos, code);
+            }
+        }
+        Ok(page)
+    }
+
+    /// Count all user codes currently stored in flash without allocating.
     pub async fn count_user_codes(&mut self) -> Result<usize, StorageError> {
-        Ok(self.list_user_codes().await?.len())
+        let mut count = 0;
+        let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
+        while let Some((key, _val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
+            if matches!(key, StorageKey::UserCode(_)) {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Erase the entire storage partition.

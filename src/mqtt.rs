@@ -91,7 +91,10 @@ pub fn outbox_receiver()
 /// [`MAX_PAYLOAD_LEN`], or the outbox is full.
 pub fn try_enqueue(topic: &str, payload: &[u8], qos: PublishQoS) {
     let Ok(topic) = heapless::String::try_from(topic) else {
-        warn!("MQTT topic too long ({} bytes); dropping message", topic.len());
+        warn!(
+            "MQTT topic too long ({} bytes); dropping message",
+            topic.len()
+        );
         return;
     };
     let Ok(payload) = heapless::Vec::from_slice(payload) else {

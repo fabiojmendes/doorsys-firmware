@@ -415,21 +415,39 @@ async fn execute_command(
                     let _ = writeln!(out, "\r\nError counting codes: {:?}\r", e);
                 }
             },
-            CodesCmd::List => match ctx.user_db.list().await {
-                Ok(codes) => {
-                    let mut line = heapless::String::<64>::new();
-                    let _ = writeln!(line, "\r\nTotal codes: {}\r", codes.len());
-                    io.write_all(line.as_bytes()).await;
-                    for c in codes {
-                        line.clear();
-                        let _ = writeln!(line, "  {}\r", c);
-                        io.write_all(line.as_bytes()).await;
+            CodesCmd::List => {
+                let mut line = heapless::String::<64>::new();
+                let _ = writeln!(line, "\r");
+                io.write_all(line.as_bytes()).await;
+
+                let mut total: usize = 0;
+                let mut after: Option<i32> = None;
+                loop {
+                    match ctx.user_db.list_page::<CODES_PAGE_SIZE>(after).await {
+                        Ok(page) => {
+                            let is_last = page.len() < CODES_PAGE_SIZE
+                                || page.last().copied() == Some(i32::MAX);
+                            total += page.len();
+                            after = page.last().copied();
+                            for c in page {
+                                line.clear();
+                                let _ = writeln!(line, "  {}\r", c);
+                                io.write_all(line.as_bytes()).await;
+                            }
+                            if is_last {
+                                line.clear();
+                                let _ = writeln!(line, "Total codes: {}\r", total);
+                                io.write_all(line.as_bytes()).await;
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = writeln!(out, "\r\nError listing codes: {:?}\r", e);
+                            break;
+                        }
                     }
                 }
-                Err(e) => {
-                    let _ = writeln!(out, "\r\nError listing codes: {:?}\r", e);
-                }
-            },
+            }
             CodesCmd::Add { code } => match ctx.user_db.add(code).await {
                 Ok(()) => {
                     let _ = writeln!(out, "\r\nAdded code {}\r", code);

@@ -83,9 +83,13 @@ impl UserDb {
         Ok(())
     }
 
-    /// Return a sorted list of all user codes stored in flash.
-    pub async fn list(&self) -> Result<Vec<i32>, StorageError> {
-        self.storage.lock().await.list_user_codes().await
+    /// Fetch up to `N` user codes strictly greater than `after` in ascending order without
+    /// allocating on the heap.
+    pub async fn list_page<const N: usize>(
+        &self,
+        after: Option<i32>,
+    ) -> Result<heapless::Vec<i32, N>, StorageError> {
+        self.storage.lock().await.list_user_codes_page(after).await
     }
 
     /// Return the number of user codes stored in flash.
