@@ -12,11 +12,18 @@ use crate::{
     clock,
     config::{self, MqttConfig},
     door, mqtt,
-    shell::{BufferedWriter, UsbShellIo},
+    shell::{BufferedWriter, TxBuffer, UsbShellIo},
     storage::SharedStorage,
     user_db::UserDb,
     wifi::{self, AuthMethod, WifiCredentials, WifiStack},
 };
+
+/// Capacity of the `embedded-cli` output buffer. Must hold the largest single burst of CLI output
+/// (the generated `help` listing) since it is only drained between input bytes.
+const SHELL_TX_BUF_SIZE: usize = 1024;
+
+/// Number of codes fetched from flash per page by `codes list`.
+const CODES_PAGE_SIZE: usize = 32;
 
 static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 
@@ -185,7 +192,7 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
     let mut io = UsbShellIo::new(usb_device);
     let mut cmd_buf = [0u8; 192];
     let mut hist_buf = [0u8; 256];
-    let tx_buf = core::cell::RefCell::new(alloc::vec::Vec::with_capacity(512));
+    let tx_buf: TxBuffer<SHELL_TX_BUF_SIZE> = TxBuffer::new(heapless::Vec::new());
 
     let mut cli = CliBuilder::default()
         .writer(BufferedWriter::new(&tx_buf))
@@ -198,7 +205,7 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
     let mut rx_chunk = [0u8; 64];
 
     loop {
-        flush_cli_writer(&tx_buf, &mut io).await;
+        io.drain(&tx_buf).await;
 
         let n = io.read(&mut rx_chunk).await;
         for &byte in &rx_chunk[..n] {
@@ -211,7 +218,7 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
                 }),
             );
 
-            flush_cli_writer(&tx_buf, &mut io).await;
+            io.drain(&tx_buf).await;
 
             if let Some(cmd) = captured {
                 let mut out = heapless::String::<512>::new();
@@ -222,17 +229,6 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
             }
         }
     }
-}
-
-async fn flush_cli_writer(tx_buf: &core::cell::RefCell<alloc::vec::Vec<u8>>, io: &mut UsbShellIo) {
-    let pending: alloc::vec::Vec<u8> = {
-        let mut guard = tx_buf.borrow_mut();
-        if guard.is_empty() {
-            return;
-        }
-        core::mem::take(&mut *guard)
-    };
-    io.write_all(&pending).await;
 }
 
 async fn execute_command(

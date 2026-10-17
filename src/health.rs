@@ -1,17 +1,28 @@
 //! Periodic health check reporter publishing heap and flash storage metrics to `doorsys/status`
 //! in InfluxDB line protocol format.
 
-use alloc::{format, vec::Vec};
-use defmt::info;
+use core::fmt::Write as _;
+use defmt::{info, warn};
 use embassy_time::{Duration, Timer};
 
 use crate::{
     clock,
-    mqtt::{self, PublishQoS},
+    mqtt::{self, MAX_PAYLOAD_LEN, PublishQoS},
     storage::SharedStorage,
 };
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+const STATUS_TOPIC: &str = "doorsys/status";
+
+/// Log and enqueue a formatted line, or warn if it did not fit in the buffer.
+fn publish_line(line: &str, fmt_ok: bool) {
+    if !fmt_ok {
+        warn!("Health line exceeded {} bytes; dropping", MAX_PAYLOAD_LEN);
+        return;
+    }
+    info!("{}", line);
+    mqtt::try_enqueue(STATUS_TOPIC, line.as_bytes(), PublishQoS::AtMostOnce);
+}
 
 /// Run the periodic health check loop forever.
 pub async fn run(
@@ -20,6 +31,7 @@ pub async fn run(
     storage: &'static SharedStorage,
 ) -> ! {
     let capacity = storage.lock().await.capacity();
+    let mut line = heapless::String::<MAX_PAYLOAD_LEN>::new();
 
     loop {
         let time = clock::now_nanos();
@@ -30,24 +42,21 @@ pub async fn run(
         let total = stats.size;
         let max_used = stats.max_usage;
 
-        let heap_line = format!(
+        line.clear();
+        let ok = write!(
+            line,
             "heap,host={net_id},version={version} free={free},used={used},total={total},max_used={max_used} {time}"
-        );
-        info!("{}", heap_line.as_str());
-        mqtt::try_enqueue(
-            "doorsys/status",
-            Vec::from(heap_line.as_bytes()),
-            PublishQoS::AtMostOnce,
-        );
+        )
+        .is_ok();
+        publish_line(&line, ok);
 
-        let storage_line =
-            format!("storage,host={net_id},version={version} capacity={capacity} {time}");
-        info!("{}", storage_line.as_str());
-        mqtt::try_enqueue(
-            "doorsys/status",
-            Vec::from(storage_line.as_bytes()),
-            PublishQoS::AtMostOnce,
-        );
+        line.clear();
+        let ok = write!(
+            line,
+            "storage,host={net_id},version={version} capacity={capacity} {time}"
+        )
+        .is_ok();
+        publish_line(&line, ok);
 
         Timer::after(HEALTH_INTERVAL).await;
     }

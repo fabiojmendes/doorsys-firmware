@@ -4,7 +4,6 @@
 //! (`clean_start = false`, `SessionExpiryInterval::NeverEnd`), topic subscription, keep-alive
 //! pings, and draining an outgoing publication channel.
 
-use alloc::{string::String, vec, vec::Vec};
 use core::{
     num::NonZero,
     sync::atomic::{AtomicBool, Ordering},
@@ -31,6 +30,7 @@ use rust_mqtt::{
     config::{KeepAlive, SessionExpiryInterval},
     types::{MqttBinary, MqttString, TopicFilter, TopicName},
 };
+use static_cell::ConstStaticCell;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_SECS: u16 = 30;
@@ -40,7 +40,17 @@ const TCP_TX_BUF_SIZE: usize = 2048;
 const MAX_PACKET_SIZE: u32 = 16 * 1024;
 const OUTBOX_CAPACITY: usize = 32;
 
+/// Maximum length of an outgoing MQTT topic name.
+pub const MAX_TOPIC_LEN: usize = 64;
+/// Maximum length of an outgoing MQTT payload.
+pub const MAX_PAYLOAD_LEN: usize = 256;
+
 static MQTT_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+static TCP_RX_BUF: ConstStaticCell<[u8; TCP_RX_BUF_SIZE]> =
+    ConstStaticCell::new([0u8; TCP_RX_BUF_SIZE]);
+static TCP_TX_BUF: ConstStaticCell<[u8; TCP_TX_BUF_SIZE]> =
+    ConstStaticCell::new([0u8; TCP_TX_BUF_SIZE]);
 
 /// Returns `true` if the MQTT client currently has an active broker session.
 pub fn is_connected() -> bool {
@@ -56,8 +66,8 @@ pub enum PublishQoS {
 
 /// An outgoing MQTT publication queued for transmission.
 pub struct OutgoingMessage {
-    pub topic: String,
-    pub payload: Vec<u8>,
+    pub topic: heapless::String<MAX_TOPIC_LEN>,
+    pub payload: heapless::Vec<u8, MAX_PAYLOAD_LEN>,
     pub qos: PublishQoS,
 }
 
@@ -75,11 +85,25 @@ pub fn outbox_receiver()
     OUTBOX.receiver()
 }
 
-/// Try to enqueue a message without blocking; drops the message with a warning if the outbox is full.
-pub fn try_enqueue(topic: impl Into<String>, payload: Vec<u8>, qos: PublishQoS) {
+/// Try to enqueue a message without blocking.
+///
+/// Drops the message with a warning if the topic exceeds [`MAX_TOPIC_LEN`], the payload exceeds
+/// [`MAX_PAYLOAD_LEN`], or the outbox is full.
+pub fn try_enqueue(topic: &str, payload: &[u8], qos: PublishQoS) {
+    let Ok(topic) = heapless::String::try_from(topic) else {
+        warn!("MQTT topic too long ({} bytes); dropping message", topic.len());
+        return;
+    };
+    let Ok(payload) = heapless::Vec::from_slice(payload) else {
+        warn!(
+            "MQTT payload too long ({} bytes); dropping message",
+            payload.len()
+        );
+        return;
+    };
     if OUTBOX
         .try_send(OutgoingMessage {
-            topic: topic.into(),
+            topic,
             payload,
             qos,
         })
@@ -112,8 +136,9 @@ pub async fn run<H>(
 where
     H: AsyncFnMut(&str, &[u8]),
 {
-    let mut rx_buf = vec![0u8; TCP_RX_BUF_SIZE];
-    let mut tx_buf = vec![0u8; TCP_TX_BUF_SIZE];
+    // Statically allocated; `run` must therefore only be called once (panics otherwise).
+    let rx_buf = TCP_RX_BUF.take();
+    let tx_buf = TCP_TX_BUF.take();
 
     loop {
         MQTT_CONNECTED.store(false, Ordering::Relaxed);
@@ -136,7 +161,7 @@ where
             }
         };
 
-        let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+        let mut socket = TcpSocket::new(stack, &mut rx_buf[..], &mut tx_buf[..]);
         socket.set_timeout(Some(Duration::from_secs(15)));
 
         let endpoint = IpEndpoint::new(remote_ip, settings.port);
