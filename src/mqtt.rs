@@ -215,7 +215,6 @@ where
         };
 
         let mut socket = TcpSocket::new(stack, &mut tcp_rx_buf[..], &mut tcp_tx_buf[..]);
-        socket.set_timeout(Some(Duration::from_secs(15)));
 
         let endpoint = IpEndpoint::new(remote_ip, settings.port);
         info!("Connecting to MQTT broker at {}...", endpoint);
