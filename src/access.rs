@@ -4,16 +4,14 @@
 //! the door relay on valid entry, plays audible/visual feedback on the keypad signal line, and
 //! enqueues [`Audit`] records for MQTT publication.
 
-use core::fmt::Write as _;
-use defmt::{error, info, warn};
+use defmt::{info, warn};
 use doorsys_protocol::{Audit, CodeType, Timestamp};
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::Output;
 
 use crate::{
-    clock, door,
-    mqtt::{self, PublishQoS},
+    clock, door, mqtt,
     user_db::UserDb,
     wiegand::{Packet, Reader},
 };
@@ -50,8 +48,8 @@ async fn keypad_feedback(success: bool, pin: &mut Output<'_>) {
     pin.set_high();
 }
 
-fn enqueue_audit(device_id: &str, code: i32, code_type: CodeType, success: bool) {
-    let audit = Audit {
+fn enqueue_audit(code: i32, code_type: CodeType, success: bool) {
+    mqtt::enqueue_audit(Audit {
         timestamp: Timestamp {
             secs_since_epoch: clock::now_unix_secs(),
             nanos_since_epoch: 0,
@@ -59,21 +57,7 @@ fn enqueue_audit(device_id: &str, code: i32, code_type: CodeType, success: bool)
         code,
         code_type,
         success,
-    };
-    let mut buf = [0u8; 32];
-    match postcard::to_slice(&audit, &mut buf) {
-        Ok(payload) => {
-            let mut topic = heapless::String::<{ mqtt::MAX_TOPIC_LEN }>::new();
-            if write!(topic, "doorsys/audit/{}", device_id).is_err() {
-                error!("Audit topic too long for device id {}", device_id);
-                return;
-            }
-            mqtt::try_enqueue(&topic, payload, PublishQoS::AtLeastOnce);
-        }
-        Err(e) => {
-            error!("Error encoding audit record: {:?}", e);
-        }
-    }
+    });
 }
 
 /// Run the Wiegand reader and keypad PIN entry loop forever.
@@ -81,7 +65,6 @@ pub async fn run(
     mut reader: Reader,
     mut signal_pin: Output<'static>,
     user_db: UserDb,
-    device_id: heapless::String<32>,
 ) -> ! {
     signal_pin.set_high();
     let mut keys: heapless::Vec<u8, MAX_PIN_LENGTH> = heapless::Vec::new();
@@ -96,7 +79,7 @@ pub async fn run(
                     if success {
                         door::trigger_open();
                     }
-                    enqueue_audit(device_id.as_str(), pin, CodeType::Pin, success);
+                    enqueue_audit(pin, CodeType::Pin, success);
                     keys.clear();
                     keypad_feedback(success, &mut signal_pin).await;
                 } else if key == STAR_KEY {
@@ -117,7 +100,7 @@ pub async fn run(
                 if success {
                     door::trigger_open();
                 }
-                enqueue_audit(device_id.as_str(), rfid, CodeType::Fob, success);
+                enqueue_audit(rfid, CodeType::Fob, success);
                 keypad_feedback(success, &mut signal_pin).await;
                 keys.clear();
             }

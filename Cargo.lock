@@ -220,12 +220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b396d1f76d455557e1218ec8066ae14bba60b4b36ecd55577ba979f5db7ecaa"
 
 [[package]]
-name = "const_fn"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413d67b29ef1021b4d60f4aa1e925ca031751e213832b4b1d588fae623c05c60"
-
-[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,10 +511,10 @@ dependencies = [
  "esp-rtos",
  "esp-storage",
  "heapless 0.9.3",
+ "minimq",
  "panic-rtt-target",
  "postcard",
  "rtt-target",
- "rust-mqtt",
  "sequential-storage",
  "serde",
  "sntpc",
@@ -1754,6 +1748,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "minimq"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "593368fcf9a07acc76d406154774b6ab23747966b501ce8a7cc6a92c36f217f9"
+dependencies = [
+ "defmt 1.1.1",
+ "embassy-time",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.3",
+ "num_enum",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "nb"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1804,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2042,18 +2072,6 @@ dependencies = [
  "defmt 0.3.101",
  "portable-atomic",
  "ufmt-write",
-]
-
-[[package]]
-name = "rust-mqtt"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9345427199453b4961a0a275edbca86d0472942d731c6d79a23517c1db8f7ca3"
-dependencies = [
- "const_fn",
- "defmt 1.1.1",
- "embedded-io-async 0.7.0",
- "heapless 0.9.3",
 ]
 
 [[package]]

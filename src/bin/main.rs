@@ -49,13 +49,8 @@ async fn door_task(relay_pin: Output<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn access_task(
-    reader: Reader,
-    signal_pin: Output<'static>,
-    user_db: UserDb,
-    device_id: heapless::String<32>,
-) -> ! {
-    access::run(reader, signal_pin, user_db, device_id).await
+async fn access_task(reader: Reader, signal_pin: Output<'static>, user_db: UserDb) -> ! {
+    access::run(reader, signal_pin, user_db).await
 }
 
 #[embassy_executor::task]
@@ -93,19 +88,13 @@ async fn health_task(
 )]
 #[embassy_executor::task]
 async fn mqtt_task(stack: Stack<'static>, settings: MqttSettings, user_db: UserDb) -> ! {
-    mqtt::run(
-        stack,
-        settings,
-        USER_TOPIC,
-        mqtt::outbox_receiver(),
-        async move |topic, payload| {
-            if topic == USER_TOPIC {
-                user_db.process_user_message(payload).await;
-            } else {
-                warn!("Unhandled MQTT topic: {}", topic);
-            }
-        },
-    )
+    mqtt::run(stack, settings, USER_TOPIC, async move |topic, payload| {
+        if topic == USER_TOPIC {
+            user_db.process_user_message(payload).await;
+        } else {
+            warn!("Unhandled MQTT topic: {}", topic);
+        }
+    })
     .await
 }
 
@@ -233,8 +222,7 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     spawner.spawn(
-        access_task(reader, signal_output, user_db, device_id.clone())
-            .expect("Failed to spawn access_task"),
+        access_task(reader, signal_output, user_db).expect("Failed to spawn access_task"),
     );
 
     let shell_ctx = ShellContext {
