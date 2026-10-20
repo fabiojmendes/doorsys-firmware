@@ -12,6 +12,7 @@ use doorsys_protocol::{Audit, CodeType};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio::{InputPin, OutputMode, OutputPin, PinDriver};
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::temp_sensor::{TempSensor, TempSensorConfig, TempSensorDriver};
 use esp_idf_svc::mqtt::client::QoS;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{
@@ -207,13 +208,21 @@ fn setup_audit_publiher(
 }
 
 /// Starts the health check thread
-fn health_check(net_id: &str, mqtt_client: Arc<Mutex<MqttClient>>) -> anyhow::Result<()> {
+fn health_check(
+    net_id: &str,
+    mqtt_client: Arc<Mutex<MqttClient>>,
+    temp_sensor: TempSensor<'static>,
+) -> anyhow::Result<()> {
     let systime = EspSystemTime {};
 
     let mqtt_client = mqtt_client.clone();
 
     let net_id = net_id.to_owned();
     let version = built_info::GIT_VERSION.unwrap_or("");
+
+    let cfg = TempSensorConfig::default();
+    let mut temp_sensor_driver = TempSensorDriver::new(&cfg, temp_sensor)?;
+    temp_sensor_driver.enable()?;
 
     thread::spawn(move || loop {
         let time = systime.now().as_nanos();
@@ -252,6 +261,24 @@ fn health_check(net_id: &str, mqtt_client: Arc<Mutex<MqttClient>>) -> anyhow::Re
             QoS::AtMostOnce,
             false,
             nvs.as_bytes(),
+        ) {
+            log::warn!("mqtt publish error: {}", e);
+        }
+
+        let temp = match temp_sensor_driver.get_celsius() {
+            Ok(temp) => {
+                format!("temperature,host={net_id},version={version} temp={temp:.2} {time}")
+            }
+            Err(e) => {
+                format!("error: {e}")
+            }
+        };
+        log::info!("{}", temp);
+        if let Err(e) = mqtt_client.lock().unwrap().publish(
+            "doorsys/status",
+            QoS::AtMostOnce,
+            false,
+            temp.as_bytes(),
         ) {
             log::warn!("mqtt publish error: {}", e);
         }
@@ -325,7 +352,7 @@ fn main() -> anyhow::Result<()> {
 
     setup_audit_publiher(&net_id, mqtt_client.clone(), audit_rx);
 
-    health_check(&net_id, mqtt_client.clone())?;
+    health_check(&net_id, mqtt_client.clone(), peripherals.temp_sensor)?;
 
     log::info!("Application fully functional");
 
