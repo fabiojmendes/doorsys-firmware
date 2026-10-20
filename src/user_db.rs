@@ -33,7 +33,7 @@ impl UserDb {
     }
 
     /// Add `code` to flash if it is not already stored.
-    pub async fn add(&self, code: i32) -> Result<(), StorageError> {
+    async fn add(&self, code: i32) -> Result<(), StorageError> {
         let mut store = self.storage.lock().await;
         let key = StorageKey::UserCode(code);
         if !store.contains(key).await? {
@@ -43,13 +43,13 @@ impl UserDb {
     }
 
     /// Remove `code` from flash.
-    pub async fn delete(&self, code: i32) -> Result<(), StorageError> {
+    async fn delete(&self, code: i32) -> Result<(), StorageError> {
         let mut store = self.storage.lock().await;
         store.remove(StorageKey::UserCode(code)).await
     }
 
     /// Replace `old` code with `new` code in flash.
-    pub async fn replace(&self, old: i32, new: i32) -> Result<(), StorageError> {
+    async fn replace(&self, old: i32, new: i32) -> Result<(), StorageError> {
         let mut store = self.storage.lock().await;
         store.remove(StorageKey::UserCode(old)).await?;
         let new_key = StorageKey::UserCode(new);
@@ -61,7 +61,7 @@ impl UserDb {
 
     /// Synchronize the flash code database with `codes`, removing stale codes and inserting new
     /// ones without rewriting unchanged entries.
-    pub async fn bulk(&self, mut codes: Vec<i32>) -> Result<(), StorageError> {
+    async fn bulk(&self, mut codes: Vec<i32>) -> Result<(), StorageError> {
         codes.sort_unstable();
         codes.dedup();
 
@@ -81,15 +81,6 @@ impl UserDb {
         }
 
         Ok(())
-    }
-
-    /// Fetch up to `N` user codes strictly greater than `after` in ascending order without
-    /// allocating on the heap.
-    pub async fn list_page<const N: usize>(
-        &self,
-        after: Option<i32>,
-    ) -> Result<heapless::Vec<i32, N>, StorageError> {
-        self.storage.lock().await.list_user_codes_page(after).await
     }
 
     /// Return the number of user codes stored in flash.

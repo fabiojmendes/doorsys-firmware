@@ -285,38 +285,6 @@ impl Storage {
         Ok(codes)
     }
 
-    /// Fetch up to `N` user codes strictly greater than `after` in ascending order without
-    /// allocating on the heap.
-    pub async fn list_user_codes_page<const N: usize>(
-        &mut self,
-        after: Option<i32>,
-    ) -> Result<heapless::Vec<i32, N>, StorageError> {
-        let mut page = heapless::Vec::<i32, N>::new();
-        if N == 0 {
-            return Ok(page);
-        }
-
-        let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
-        while let Some((key, _val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
-            let StorageKey::UserCode(code) = key else {
-                continue;
-            };
-            if after.is_some_and(|prev| code <= prev) {
-                continue;
-            }
-            if page.is_full() && page.last().is_some_and(|&max| code >= max) {
-                continue;
-            }
-            if let Err(pos) = page.binary_search(&code) {
-                if page.is_full() {
-                    page.pop();
-                }
-                let _ = page.insert(pos, code);
-            }
-        }
-        Ok(page)
-    }
-
     /// Count all user codes currently stored in flash without allocating.
     pub async fn count_user_codes(&mut self) -> Result<usize, StorageError> {
         let mut count = 0;

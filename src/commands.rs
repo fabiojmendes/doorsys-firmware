@@ -22,9 +22,6 @@ use crate::{
 /// (the generated `help` listing) since it is only drained between input bytes.
 const SHELL_TX_BUF_SIZE: usize = 1024;
 
-/// Number of codes fetched from flash per page by `codes list`.
-const CODES_PAGE_SIZE: usize = 32;
-
 static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 
 /// Top-level CLI commands available over the USB-Serial-JTAG shell.
@@ -57,12 +54,6 @@ enum CliCmd<'a> {
         password: &'a str,
     },
 
-    /// Inspect or modify the local access code database
-    Codes {
-        #[command(subcommand)]
-        op: CodesCmd,
-    },
-
     /// Pulse the door relay open for 4 seconds
     Open,
 
@@ -74,25 +65,6 @@ enum CliCmd<'a> {
         /// Confirm destructive factory reset
         #[arg(long)]
         confirm: bool,
-    },
-}
-
-/// Subcommands for `codes`.
-#[derive(Command, Clone, Copy)]
-enum CodesCmd {
-    /// List all stored access codes
-    List,
-    /// Show the number of stored access codes
-    Count,
-    /// Add an access code to flash
-    Add {
-        /// Numeric PIN or RFID code
-        code: i32,
-    },
-    /// Delete an access code from flash
-    Del {
-        /// Numeric PIN or RFID code
-        code: i32,
     },
 }
 
@@ -111,7 +83,6 @@ enum OwnedCmd {
         username: heapless::String<64>,
         password: heapless::String<64>,
     },
-    Codes(CodesCmd),
     Open,
     Reboot,
     FactoryReset {
@@ -169,7 +140,6 @@ impl OwnedCmd {
                     password,
                 }
             }
-            CliCmd::Codes { op } => Self::Codes(op),
             CliCmd::Open => Self::Open,
             CliCmd::Reboot => Self::Reboot,
             CliCmd::FactoryReset { confirm } => Self::FactoryReset { confirm },
@@ -406,65 +376,6 @@ async fn execute_command(
                 }
             }
         }
-        OwnedCmd::Codes(sub) => match sub {
-            CodesCmd::Count => match ctx.user_db.count().await {
-                Ok(n) => {
-                    let _ = writeln!(out, "\r\nStored codes: {}\r", n);
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "\r\nError counting codes: {:?}\r", e);
-                }
-            },
-            CodesCmd::List => {
-                let mut line = heapless::String::<64>::new();
-                let _ = writeln!(line, "\r");
-                io.write_all(line.as_bytes()).await;
-
-                let mut total: usize = 0;
-                let mut after: Option<i32> = None;
-                loop {
-                    match ctx.user_db.list_page::<CODES_PAGE_SIZE>(after).await {
-                        Ok(page) => {
-                            let is_last = page.len() < CODES_PAGE_SIZE
-                                || page.last().copied() == Some(i32::MAX);
-                            total += page.len();
-                            after = page.last().copied();
-                            for c in page {
-                                line.clear();
-                                let _ = writeln!(line, "  {}\r", c);
-                                io.write_all(line.as_bytes()).await;
-                            }
-                            if is_last {
-                                line.clear();
-                                let _ = writeln!(line, "Total codes: {}\r", total);
-                                io.write_all(line.as_bytes()).await;
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = writeln!(out, "\r\nError listing codes: {:?}\r", e);
-                            break;
-                        }
-                    }
-                }
-            }
-            CodesCmd::Add { code } => match ctx.user_db.add(code).await {
-                Ok(()) => {
-                    let _ = writeln!(out, "\r\nAdded code {}\r", code);
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "\r\nError adding code: {:?}\r", e);
-                }
-            },
-            CodesCmd::Del { code } => match ctx.user_db.delete(code).await {
-                Ok(()) => {
-                    let _ = writeln!(out, "\r\nDeleted code {}\r", code);
-                }
-                Err(e) => {
-                    let _ = writeln!(out, "\r\nError deleting code: {:?}\r", e);
-                }
-            },
-        },
         OwnedCmd::Open => {
             door::trigger_open();
             let _ = writeln!(out, "\r\nDoor relay triggered.\r");

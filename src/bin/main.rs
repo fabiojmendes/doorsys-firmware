@@ -221,9 +221,8 @@ async fn main(spawner: Spawner) -> ! {
         );
     }
 
-    spawner.spawn(
-        access_task(reader, signal_output, user_db).expect("Failed to spawn access_task"),
-    );
+    spawner
+        .spawn(access_task(reader, signal_output, user_db).expect("Failed to spawn access_task"));
 
     let shell_ctx = ShellContext {
         device_id,
