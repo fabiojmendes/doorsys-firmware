@@ -513,6 +513,7 @@ dependencies = [
  "esp-alloc",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "esp-metadata-generated",
  "esp-radio",
  "esp-rtos",
  "esp-storage",

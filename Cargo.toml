@@ -21,6 +21,7 @@ esp-rtos = { version = "0.4.0", features = [
 ] }
 
 defmt = "1.0.1"
+esp-metadata-generated = "0.5"
 esp-bootloader-esp-idf = { version = "0.6.0", features = [
   "defmt",
   "esp-storage",

@@ -27,7 +27,7 @@ use embassy_net::{Runner, Stack, StackResources};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    clock::CpuClock,
+    // clock::CpuClock,
     gpio::{DriveMode, Io, Level, Output, OutputConfig},
     peripherals::{TSENS, USB_DEVICE},
     rng::Rng,
@@ -39,6 +39,12 @@ use panic_rtt_target as _;
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
+
+// Full `.dram2_uninit` region for this chip.
+const DRAM2_UNINIT_SIZE: usize = {
+    let range: core::ops::Range<usize> = esp_metadata_generated::memory_range!("DRAM2_UNINIT");
+    range.end - range.start
+};
 
 const HOSTNAME_PREFIX: &str = "doorsys";
 const USER_TOPIC: &str = "doorsys/user";
@@ -106,8 +112,8 @@ async fn mqtt_task(stack: Stack<'static>, settings: MqttSettings, user_db: UserD
 async fn main(spawner: Spawner) -> ! {
     rtt_target::rtt_init_defmt!();
 
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
+    // let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(esp_hal::Config::default());
 
     // The following pins are used to bootstrap the chip. They are available
     // for use, but check the datasheet of the module for more information on them.
@@ -123,8 +129,9 @@ async fn main(spawner: Spawner) -> ! {
     let _gpio16 = peripherals.GPIO16;
     let _gpio17 = peripherals.GPIO17;
 
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 66320);
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: DRAM2_UNINIT_SIZE);
     esp_alloc::heap_allocator!(size: 32 * 1024);
+    info!("Heap allocation: {}", DRAM2_UNINIT_SIZE);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
