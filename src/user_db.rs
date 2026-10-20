@@ -108,6 +108,8 @@ impl UserDb {
                 info!("Bulk syncing {} codes", codes.len());
                 if let Err(e) = self.bulk(codes).await {
                     error!("Error bulk inserting codes: {:?}", e);
+                } else {
+                    info!("Bulk syncing complete");
                 }
             }
             Err(e) => {
