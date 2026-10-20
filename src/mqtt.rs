@@ -473,12 +473,12 @@ async fn send_telemetry<'c>(
     );
     publish_status_line(client, line.as_bytes()).await?;
 
-    // 3. General status metrics (uptime and stored code count)
+    // 3. General status metrics (uptime, stored code count, and chip temperature)
     line.clear();
     let _ = write!(
         line,
-        "status,host={host} version={version},uptime={},codes={} {time}",
-        t.uptime_secs, t.codes_count
+        "status,host={host} version={version},uptime={},codes={},temp={:.2} {time}",
+        t.uptime_secs, t.codes_count, t.temperature_celsius
     );
     publish_status_line(client, line.as_bytes()).await
 }
