@@ -1,61 +1,55 @@
-//! Periodic health check reporter publishing heap and flash storage metrics to `doorsys/status`
-//! in InfluxDB line protocol format.
+//! Periodic health check collector publishing heap, storage, and general status metrics via MQTT.
 
-use core::fmt::Write as _;
-use defmt::{info, warn};
+use defmt::info;
 use embassy_time::{Duration, Timer};
 
-use crate::{
-    clock,
-    mqtt::{self, MAX_TELEMETRY_LEN},
-    storage::SharedStorage,
-};
+use crate::{clock, mqtt, storage::SharedStorage, user_db::UserDb};
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Log and enqueue a formatted line, or warn if it did not fit in the buffer.
-fn publish_line(line: &str, fmt_ok: bool) {
-    if !fmt_ok {
-        warn!("Health line exceeded {} bytes; dropping", MAX_TELEMETRY_LEN);
-        return;
-    }
-    info!("{}", line);
-    mqtt::publish_telemetry(line);
+/// Snapshot of device health and status metrics collected periodically for telemetry publication.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub struct Telemetry {
+    pub version: &'static str,
+    pub timestamp_nanos: u128,
+    pub uptime_secs: u64,
+    pub codes_count: usize,
+    pub heap_free: usize,
+    pub heap_used: usize,
+    pub heap_total: usize,
+    pub heap_max_used: usize,
+    pub storage_capacity: u32,
 }
 
 /// Run the periodic health check loop forever.
-pub async fn run(
-    net_id: heapless::String<32>,
-    version: &'static str,
-    storage: &'static SharedStorage,
-) -> ! {
-    let capacity = storage.lock().await.capacity();
-    let mut line = heapless::String::<MAX_TELEMETRY_LEN>::new();
+pub async fn run(version: &'static str, storage: &'static SharedStorage, user_db: UserDb) -> ! {
+    let storage_capacity = storage.lock().await.capacity();
 
     loop {
-        let time = clock::now_nanos();
+        let timestamp_nanos = clock::now_nanos();
+        let uptime_secs = clock::uptime_secs();
+        let codes_count = user_db.count().await.unwrap_or(0);
 
         let stats = esp_alloc::HEAP.stats();
-        let free = stats.size.saturating_sub(stats.current_usage);
-        let used = stats.current_usage;
-        let total = stats.size;
-        let max_used = stats.max_usage;
+        let heap_free = stats.size.saturating_sub(stats.current_usage);
+        let heap_used = stats.current_usage;
+        let heap_total = stats.size;
+        let heap_max_used = stats.max_usage;
 
-        line.clear();
-        let ok = write!(
-            line,
-            "heap,host={net_id},version={version} free={free},used={used},total={total},max_used={max_used} {time}"
-        )
-        .is_ok();
-        publish_line(&line, ok);
+        let snapshot = Telemetry {
+            version,
+            timestamp_nanos,
+            uptime_secs,
+            codes_count,
+            heap_free,
+            heap_used,
+            heap_total,
+            heap_max_used,
+            storage_capacity,
+        };
 
-        line.clear();
-        let ok = write!(
-            line,
-            "storage,host={net_id},version={version} capacity={capacity} {time}"
-        )
-        .is_ok();
-        publish_line(&line, ok);
+        info!("Health telemetry: {:?}", snapshot);
+        mqtt::publish_telemetry(snapshot);
 
         Timer::after(HEALTH_INTERVAL).await;
     }

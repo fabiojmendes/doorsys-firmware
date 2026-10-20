@@ -75,11 +75,11 @@ async fn sntp_task(stack: Stack<'static>) -> ! {
 
 #[embassy_executor::task]
 async fn health_task(
-    net_id: heapless::String<32>,
     version: &'static str,
     storage: &'static SharedStorage,
+    user_db: UserDb,
 ) -> ! {
-    health::run(net_id, version, storage).await
+    health::run(version, storage, user_db).await
 }
 
 #[allow(
@@ -182,8 +182,7 @@ async fn main(spawner: Spawner) -> ! {
                 spawner.spawn(net_task(net_runner).expect("Failed to spawn net_task"));
                 spawner.spawn(sntp_task(wifi_stack.stack).expect("Failed to spawn sntp_task"));
                 spawner.spawn(
-                    health_task(device_id.clone(), git_version, storage)
-                        .expect("Failed to spawn health_task"),
+                    health_task(git_version, storage, user_db).expect("Failed to spawn health_task"),
                 );
 
                 if let Some(m) = mqtt_cfg {

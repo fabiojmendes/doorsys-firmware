@@ -27,7 +27,7 @@ static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 /// Top-level CLI commands available over the USB-Serial-JTAG shell.
 #[derive(Command)]
 enum CliCmd<'a> {
-    /// Show device ID, firmware version, Wi-Fi/IP, MQTT, time sync, heap, and code count
+    /// Show device ID, firmware version, uptime, Wi-Fi/IP, MQTT, time sync, heap, and code count
     Status,
 
     /// Show stored Wi-Fi and MQTT configuration (passwords masked)
@@ -218,6 +218,7 @@ async fn execute_command(
 
             let _ = writeln!(out, "\r\nDevice ID : {}\r", ctx.device_id);
             let _ = writeln!(out, "Firmware  : {} ({})\r", ctx.version, ctx.git_version);
+            let _ = writeln!(out, "Uptime    : {}\r", clock::uptime());
             let _ = writeln!(
                 out,
                 "Wi-Fi     : {}\r",

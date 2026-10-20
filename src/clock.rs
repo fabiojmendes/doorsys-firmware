@@ -5,6 +5,7 @@
 
 use core::{
     cell::Cell,
+    fmt,
     net::{IpAddr, SocketAddr},
 };
 
@@ -70,6 +71,48 @@ pub fn now_unix_secs() -> u64 {
 pub fn now_nanos() -> u128 {
     let us = current_unix_micros().unwrap_or_else(|| Instant::now().as_micros());
     u128::from(us) * 1_000
+}
+
+/// Returns the system uptime in seconds since boot.
+pub fn uptime_secs() -> u64 {
+    Instant::now().as_secs()
+}
+
+/// Returns a displayable [`Uptime`] value representing the current time since boot.
+pub fn uptime() -> Uptime {
+    Uptime(uptime_secs())
+}
+
+/// Human-readable uptime duration (`HHh MMm SSs` or `Dd HHh MMm SSs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Uptime(pub u64);
+
+impl fmt::Display for Uptime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let days = self.0 / 86_400;
+        let hours = (self.0 % 86_400) / 3_600;
+        let mins = (self.0 % 3_600) / 60;
+        let secs = self.0 % 60;
+        if days > 0 {
+            write!(f, "{days}d {hours:02}h {mins:02}m {secs:02}s")
+        } else {
+            write!(f, "{hours:02}h {mins:02}m {secs:02}s")
+        }
+    }
+}
+
+impl defmt::Format for Uptime {
+    fn format(&self, f: defmt::Formatter) {
+        let days = self.0 / 86_400;
+        let hours = (self.0 % 86_400) / 3_600;
+        let mins = (self.0 % 3_600) / 60;
+        let secs = self.0 % 60;
+        if days > 0 {
+            defmt::write!(f, "{=u64}d {=u64:02}h {=u64:02}m {=u64:02}s", days, hours, mins, secs);
+        } else {
+            defmt::write!(f, "{=u64:02}h {=u64:02}m {=u64:02}s", hours, mins, secs);
+        }
+    }
 }
 
 /// Continuously synchronize the wall clock against `DEFAULT_NTP_HOST`.

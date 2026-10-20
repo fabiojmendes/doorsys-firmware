@@ -22,7 +22,7 @@ use rust_mqtt::{
     Bytes,
     buffer::BumpBuffer,
     client::{
-        Client,
+        Client, MqttError,
         event::{Event, Suback},
         options::{
             ConnectOptions, PublicationOptions, RetainHandling, SubscriptionOptions, TopicReference,
@@ -33,6 +33,8 @@ use rust_mqtt::{
     types::{MqttBinary, MqttString, TopicFilter, TopicName},
 };
 use static_cell::ConstStaticCell;
+
+use crate::health::Telemetry;
 
 // ============================================================================
 // Tuning & Buffer Configuration Constants
@@ -45,12 +47,11 @@ use static_cell::ConstStaticCell;
 /// across extended Wi-Fi or broker outages.
 pub const AUDIT_OUTBOX_CAPACITY: usize = 128;
 
-/// Maximum number of formatted health telemetry lines queued in RAM while connected.
+/// Maximum number of [`Telemetry`] snapshots queued in RAM while connected.
 ///
-/// [`crate::health`] emits 2 status lines (`heap` and `storage`) every 60 seconds. Telemetry is
-/// only enqueued when [`is_connected`] is `true`, so 2 slots (~520 bytes in `.bss`) is sufficient
-/// without ever competing with [`AUDIT_OUTBOX`].
-pub const TELEMETRY_OUTBOX_CAPACITY: usize = 2;
+/// [`crate::health`] emits one [`Telemetry`] struct (~56 bytes) every 60 seconds, which the MQTT
+/// task expands into 3 InfluxDB line protocol messages (`heap`, `storage`, and `status`).
+pub const TELEMETRY_OUTBOX_CAPACITY: usize = 1;
 
 /// Maximum byte length of a single formatted health telemetry line on `doorsys/status`.
 pub const MAX_TELEMETRY_LEN: usize = 256;
@@ -112,16 +113,12 @@ static TCP_RX_BUF: ConstStaticCell<[u8; TCP_RX_BUF_SIZE]> =
     ConstStaticCell::new([0u8; TCP_RX_BUF_SIZE]);
 static TCP_TX_BUF: ConstStaticCell<[u8; TCP_TX_BUF_SIZE]> =
     ConstStaticCell::new([0u8; TCP_TX_BUF_SIZE]);
-static MQTT_BUF: ConstStaticCell<[u8; MQTT_BUF_SIZE]> =
-    ConstStaticCell::new([0u8; MQTT_BUF_SIZE]);
+static MQTT_BUF: ConstStaticCell<[u8; MQTT_BUF_SIZE]> = ConstStaticCell::new([0u8; MQTT_BUF_SIZE]);
 
 static AUDIT_OUTBOX: Channel<CriticalSectionRawMutex, Audit, AUDIT_OUTBOX_CAPACITY> =
     Channel::new();
-static TELEMETRY_OUTBOX: Channel<
-    CriticalSectionRawMutex,
-    heapless::String<MAX_TELEMETRY_LEN>,
-    TELEMETRY_OUTBOX_CAPACITY,
-> = Channel::new();
+static TELEMETRY_OUTBOX: Channel<CriticalSectionRawMutex, Telemetry, TELEMETRY_OUTBOX_CAPACITY> =
+    Channel::new();
 
 type DoorsysSession = Session<1, RECEIVE_MAXIMUM, SEND_MAXIMUM, 0, 0>;
 type DoorsysMqttClient<'a, 'c, T> =
@@ -143,24 +140,16 @@ pub fn enqueue_audit(audit: Audit) {
     }
 }
 
-/// Enqueue a health telemetry line for QoS 0 (`AtMostOnce`) publication on `doorsys/status`.
+/// Enqueue a [`Telemetry`] snapshot for QoS 0 (`AtMostOnce`) publication on `doorsys/status`.
 ///
-/// Drops the line silently when [`is_connected`] is `false` so fire-and-forget telemetry only
+/// Drops the snapshot silently when [`is_connected`] is `false` so fire-and-forget telemetry only
 /// flows over an active connection.
-pub fn publish_telemetry(line: &str) {
+pub fn publish_telemetry(telemetry: Telemetry) {
     if !is_connected() {
         return;
     }
-    let Ok(owned) = heapless::String::try_from(line) else {
-        warn!(
-            "Telemetry line too long ({} bytes, max {}); dropping",
-            line.len(),
-            MAX_TELEMETRY_LEN
-        );
-        return;
-    };
-    if TELEMETRY_OUTBOX.try_send(owned).is_err() {
-        warn!("MQTT telemetry outbox full; dropping status line");
+    if TELEMETRY_OUTBOX.try_send(telemetry).is_err() {
+        warn!("MQTT telemetry outbox full; dropping telemetry snapshot");
     }
 }
 
@@ -306,7 +295,10 @@ where
                 .at_least_once();
 
             if let Err(e) = client.subscribe(filter, &sub_opts).await {
-                error!("Failed to send SUBSCRIBE for {}: {:?}", subscription_topic, e);
+                error!(
+                    "Failed to send SUBSCRIBE for {}: {:?}",
+                    subscription_topic, e
+                );
                 session = client.session().clone();
                 Timer::after(RECONNECT_DELAY).await;
                 continue;
@@ -326,7 +318,10 @@ where
                 .outbound_publishes
                 .first()
                 .map(|(pid, _)| *pid);
-            if !send_or_replay_audit(&mut client, audit_topic.as_str(), audit, existing_pid).await {
+            if let Err(e) =
+                send_or_replay_audit(&mut client, audit_topic.as_str(), audit, existing_pid).await
+            {
+                warn!("MQTT audit publish error: {:?}", e);
                 session = client.session().clone();
                 Timer::after(RECONNECT_DELAY).await;
                 continue;
@@ -416,24 +411,18 @@ where
                 }
                 Either4::Second(audit) => {
                     let audit_ref = pending_audit.insert(audit);
-                    if !send_or_replay_audit(&mut client, audit_topic.as_str(), audit_ref, None)
-                        .await
+                    if let Err(e) =
+                        send_or_replay_audit(&mut client, audit_topic.as_str(), audit_ref, None)
+                            .await
                     {
+                        warn!("MQTT audit publish error: {:?}", e);
                         break 'session;
                     }
                     next_ping = Instant::now() + PING_INTERVAL;
                 }
-                Either4::Third(line) => {
-                    let Ok(topic_str) = MqttString::try_from(STATUS_TOPIC) else {
-                        continue 'session;
-                    };
-                    let Some(topic_name) = TopicName::new(topic_str) else {
-                        continue 'session;
-                    };
-                    let pub_opts = PublicationOptions::new(TopicReference::Name(topic_name));
-                    if let Err(e) = client
-                        .publish(&pub_opts, Bytes::from(line.as_bytes()))
-                        .await
+                Either4::Third(telemetry) => {
+                    if let Err(e) =
+                        send_telemetry(&mut client, settings.client_id.as_str(), &telemetry).await
                     {
                         warn!("MQTT telemetry publish error: {:?}", e);
                         break 'session;
@@ -456,42 +445,87 @@ where
     }
 }
 
+/// Format and publish a [`Telemetry`] snapshot as 3 QoS 0 InfluxDB line protocol messages
+/// (`heap`, `storage`, and `status`) on [`STATUS_TOPIC`].
+async fn send_telemetry<'c>(
+    client: &mut DoorsysMqttClient<'_, 'c, TcpSocket<'_>>,
+    host: &str,
+    t: &Telemetry,
+) -> Result<(), MqttError<'c, 0>> {
+    let mut line = heapless::String::<MAX_TELEMETRY_LEN>::new();
+    let version = t.version;
+    let time = t.timestamp_nanos;
+
+    // 1. Heap metrics
+    let _ = write!(
+        line,
+        "heap,host={host} free={},used={},total={},max_used={} {time}",
+        t.heap_free, t.heap_used, t.heap_total, t.heap_max_used
+    );
+    publish_status_line(client, line.as_bytes()).await?;
+
+    // 2. Storage metrics
+    line.clear();
+    let _ = write!(
+        line,
+        "storage,host={host} capacity={} {time}",
+        t.storage_capacity
+    );
+    publish_status_line(client, line.as_bytes()).await?;
+
+    // 3. General status metrics (uptime and stored code count)
+    line.clear();
+    let _ = write!(
+        line,
+        "status,host={host} version={version},uptime={},codes={} {time}",
+        t.uptime_secs, t.codes_count
+    );
+    publish_status_line(client, line.as_bytes()).await
+}
+
+async fn publish_status_line<'c>(
+    client: &mut DoorsysMqttClient<'_, 'c, TcpSocket<'_>>,
+    payload: &[u8],
+) -> Result<(), MqttError<'c, 0>> {
+    let topic_str = MqttString::try_from(STATUS_TOPIC).expect("valid STATUS_TOPIC");
+    let topic_name = TopicName::new(topic_str).expect("valid STATUS_TOPIC");
+    let pub_opts = PublicationOptions::new(TopicReference::Name(topic_name));
+    client
+        .publish(&pub_opts, Bytes::from(payload))
+        .await
+        .map(drop)
+}
+
 /// Publish a new QoS 1 [`Audit`] packet (`republish_pid == None`) or retransmit an unacknowledged
 /// [`Audit`] packet with `DUP = 1` (`republish_pid == Some(pid)`).
-async fn send_or_replay_audit(
-    client: &mut DoorsysMqttClient<'_, '_, TcpSocket<'_>>,
+async fn send_or_replay_audit<'c>(
+    client: &mut DoorsysMqttClient<'_, 'c, TcpSocket<'_>>,
     audit_topic: &str,
     audit: &Audit,
     republish_pid: Option<rust_mqtt::types::PacketIdentifier>,
-) -> bool {
+) -> Result<(), MqttError<'c, 0>> {
     let mut buf = [0u8; 32];
     let Ok(payload) = postcard::to_slice(audit, &mut buf) else {
         error!("Failed to serialize audit record");
-        return true;
+        return Ok(());
     };
     let Ok(topic_str) = MqttString::try_from(audit_topic) else {
         error!("Invalid audit topic {}", audit_topic);
-        return true;
+        return Ok(());
     };
     let Some(topic_name) = TopicName::new(topic_str) else {
         error!("Invalid audit topic name {}", audit_topic);
-        return true;
+        return Ok(());
     };
     let pub_opts = PublicationOptions::new(TopicReference::Name(topic_name)).at_least_once();
 
-    let res = match republish_pid {
+    match republish_pid {
         Some(pid) => client.republish(pid, &pub_opts, Bytes::from(payload)).await,
         None => client
             .publish(&pub_opts, Bytes::from(payload))
             .await
             .map(drop),
-    };
-
-    if let Err(e) = res {
-        warn!("MQTT audit publish error: {:?}", e);
-        return false;
     }
-    true
 }
 
 /// Handle a single decoded MQTT [`Event`], returning `true` if the session remains healthy.
