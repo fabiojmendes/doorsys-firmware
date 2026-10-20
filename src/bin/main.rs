@@ -74,12 +74,8 @@ async fn sntp_task(stack: Stack<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn health_task(
-    version: &'static str,
-    storage: &'static SharedStorage,
-    user_db: UserDb,
-) -> ! {
-    health::run(version, storage, user_db).await
+async fn health_task(version: &'static str, storage: &'static SharedStorage) -> ! {
+    health::run(version, storage).await
 }
 
 #[allow(
@@ -182,7 +178,7 @@ async fn main(spawner: Spawner) -> ! {
                 spawner.spawn(net_task(net_runner).expect("Failed to spawn net_task"));
                 spawner.spawn(sntp_task(wifi_stack.stack).expect("Failed to spawn sntp_task"));
                 spawner.spawn(
-                    health_task(git_version, storage, user_db).expect("Failed to spawn health_task"),
+                    health_task(git_version, storage).expect("Failed to spawn health_task"),
                 );
 
                 if let Some(m) = mqtt_cfg {
@@ -228,7 +224,6 @@ async fn main(spawner: Spawner) -> ! {
         version: built_info::PKG_VERSION,
         git_version,
         storage,
-        user_db,
         net: net_stack,
     };
     spawner

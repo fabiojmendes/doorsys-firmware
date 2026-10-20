@@ -83,11 +83,6 @@ impl UserDb {
         Ok(())
     }
 
-    /// Return the number of user codes stored in flash.
-    pub async fn count(&self) -> Result<usize, StorageError> {
-        self.storage.lock().await.count_user_codes().await
-    }
-
     /// Decode and apply an incoming `doorsys/user` MQTT payload.
     pub async fn process_user_message(&self, data: &[u8]) {
         match postcard::from_bytes::<UserAction>(data) {

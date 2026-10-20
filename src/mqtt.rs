@@ -468,8 +468,8 @@ async fn send_telemetry<'c>(
     line.clear();
     let _ = write!(
         line,
-        "storage,host={host} capacity={} {time}",
-        t.storage_capacity
+        "storage,host={host} used={},capacity={} {time}",
+        t.storage_used, t.storage_capacity
     );
     publish_status_line(client, line.as_bytes()).await?;
 

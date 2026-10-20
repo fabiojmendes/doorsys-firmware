@@ -3,7 +3,7 @@
 use defmt::info;
 use embassy_time::{Duration, Timer};
 
-use crate::{clock, mqtt, storage::SharedStorage, user_db::UserDb};
+use crate::{clock, mqtt, storage::SharedStorage};
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -18,17 +18,18 @@ pub struct Telemetry {
     pub heap_used: usize,
     pub heap_total: usize,
     pub heap_max_used: usize,
+    pub storage_used: u32,
     pub storage_capacity: u32,
 }
 
 /// Run the periodic health check loop forever.
-pub async fn run(version: &'static str, storage: &'static SharedStorage, user_db: UserDb) -> ! {
+pub async fn run(version: &'static str, storage: &'static SharedStorage) -> ! {
     let storage_capacity = storage.lock().await.capacity();
 
     loop {
         let timestamp_nanos = clock::now_nanos();
         let uptime_secs = clock::uptime_secs();
-        let codes_count = user_db.count().await.unwrap_or(0);
+        let (storage_used, codes_count) = storage.lock().await.stats().await.unwrap_or((0, 0));
 
         let stats = esp_alloc::HEAP.stats();
         let heap_free = stats.size.saturating_sub(stats.current_usage);
@@ -45,6 +46,7 @@ pub async fn run(version: &'static str, storage: &'static SharedStorage, user_db
             heap_used,
             heap_total,
             heap_max_used,
+            storage_used,
             storage_capacity,
         };
 

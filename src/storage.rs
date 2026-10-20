@@ -151,6 +151,7 @@ pub struct Storage {
     map: MapStorage<StorageKey, BlockingAsync<FlashStorage<'static>>, StorageCache>,
     buf: AlignedDataBuf,
     capacity: u32,
+    cached_stats: Option<(u32, usize)>,
 }
 
 /// Shared async mutex handle for [`Storage`].
@@ -175,18 +176,24 @@ impl Storage {
 
         let page_size = FlashStorage::SECTOR_SIZE;
         let max_len = (MAX_CACHED_PAGES as u32) * page_size;
-        let usable_len = len.min(max_len);
+        let partition_len = len.min(max_len);
+        // `sequential-storage` keeps 1 sector open at all times as a garbage-collection/migration
+        // buffer and reserves 2 words per sector for page-state markers.
+        let data_pages = (partition_len / page_size).saturating_sub(1);
+        let usable_capacity = data_pages * (page_size - 2 * FlashStorage::WORD_SIZE);
 
         info!(
-            "Storage partition at 0x{:x}..0x{:x} ({} bytes)",
+            "Storage partition at 0x{:x}..0x{:x} ({} bytes raw, {} bytes usable)",
             offset,
-            offset + usable_len,
-            usable_len
+            offset + partition_len,
+            partition_len,
+            usable_capacity
         );
 
-        let config =
-            MapConfig::<BlockingAsync<FlashStorage<'static>>>::try_new(offset..offset + usable_len)
-                .map_err(|_| StorageError::InvalidPartitionLayout)?;
+        let config = MapConfig::<BlockingAsync<FlashStorage<'static>>>::try_new(
+            offset..offset + partition_len,
+        )
+        .map_err(|_| StorageError::InvalidPartitionLayout)?;
 
         let cache: StorageCache = Cache::new(
             ArrayPageStates::new(),
@@ -197,7 +204,8 @@ impl Storage {
         let mut storage = Self {
             map: MapStorage::new(BlockingAsync::new(raw_flash), config, cache),
             buf: AlignedDataBuf([0u8; DATA_BUF_SIZE]),
-            capacity: usable_len,
+            capacity: usable_capacity,
+            cached_stats: None,
         };
 
         // Probe the partition; if it holds legacy ESP-IDF NVS bytes or unrecoverable corruption,
@@ -244,6 +252,7 @@ impl Storage {
         let mut raw = [0u8; DATA_BUF_SIZE / 2];
         let encoded: &[u8] =
             postcard::to_slice(value, &mut raw).map_err(|_| StorageError::Serialization)?;
+        self.cached_stats = None;
         self.map.store_item(&mut self.buf.0, &key, &encoded).await?;
         Ok(())
     }
@@ -261,12 +270,14 @@ impl Storage {
     /// Store a key with an empty payload (used for set-membership items like user codes).
     pub async fn insert_empty(&mut self, key: StorageKey) -> Result<(), StorageError> {
         let empty: &[u8] = &[];
+        self.cached_stats = None;
         self.map.store_item(&mut self.buf.0, &key, &empty).await?;
         Ok(())
     }
 
     /// Remove a single `key` from flash.
     pub async fn remove(&mut self, key: StorageKey) -> Result<(), StorageError> {
+        self.cached_stats = None;
         self.map.remove_item(&mut self.buf.0, &key).await?;
         Ok(())
     }
@@ -285,21 +296,48 @@ impl Storage {
         Ok(codes)
     }
 
-    /// Count all user codes currently stored in flash without allocating.
-    pub async fn count_user_codes(&mut self) -> Result<usize, StorageError> {
-        let mut count = 0;
-        let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
-        while let Some((key, _val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
-            if matches!(key, StorageKey::UserCode(_)) {
-                count += 1;
-            }
+    /// Calculate the flash bytes currently occupied by stored items and the number of stored user
+    /// codes in a single pass without allocating on the heap.
+    ///
+    /// Results are cached in RAM and only recomputed after flash-mutating operations ([`Self::set`],
+    /// [`Self::insert_empty`], [`Self::remove`], [`Self::erase_all`]).
+    pub async fn stats(&mut self) -> Result<(u32, usize), StorageError> {
+        if let Some(stats) = self.cached_stats {
+            return Ok(stats);
         }
-        Ok(count)
+
+        let overhead = MapStorage::<
+            StorageKey,
+            BlockingAsync<FlashStorage<'static>>,
+            StorageCache,
+        >::item_overhead_size();
+        let word_size = FlashStorage::WORD_SIZE as usize;
+
+        let mut used_bytes: u32 = 0;
+        let mut user_codes: usize = 0;
+        let mut iter = self.map.fetch_all_items(&mut self.buf.0).await?;
+        while let Some((key, val)) = iter.next::<&[u8]>(&mut self.buf.0).await? {
+            let key_len = match key {
+                StorageKey::WifiConfig | StorageKey::MqttConfig => 1,
+                StorageKey::UserCode(_) => {
+                    user_codes += 1;
+                    5
+                }
+            };
+            let padded_data = (key_len + val.len()).next_multiple_of(word_size) as u32;
+            used_bytes = used_bytes.saturating_add(overhead + padded_data);
+        }
+
+        let stats = (used_bytes, user_codes);
+        self.cached_stats = Some(stats);
+        Ok(stats)
     }
 
     /// Erase the entire storage partition.
     pub async fn erase_all(&mut self) -> Result<(), StorageError> {
+        self.cached_stats = None;
         self.map.erase_all().await?;
+        self.cached_stats = Some((0, 0));
         Ok(())
     }
 }

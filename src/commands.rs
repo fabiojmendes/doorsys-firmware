@@ -14,7 +14,6 @@ use crate::{
     door, mqtt,
     shell::{BufferedWriter, TxBuffer, UsbShellIo},
     storage::SharedStorage,
-    user_db::UserDb,
     wifi::{self, AuthMethod, WifiCredentials, WifiStack},
 };
 
@@ -27,7 +26,7 @@ static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 /// Top-level CLI commands available over the USB-Serial-JTAG shell.
 #[derive(Command)]
 enum CliCmd<'a> {
-    /// Show device ID, firmware version, uptime, Wi-Fi/IP, MQTT, time sync, heap, and code count
+    /// Show device ID, firmware version, uptime, Wi-Fi/IP, MQTT, time sync, heap, storage, and code count
     Status,
 
     /// Show stored Wi-Fi and MQTT configuration (passwords masked)
@@ -153,7 +152,6 @@ pub struct ShellContext {
     pub version: &'static str,
     pub git_version: &'static str,
     pub storage: &'static SharedStorage,
-    pub user_db: UserDb,
     pub net: Option<WifiStack>,
 }
 
@@ -214,7 +212,13 @@ async fn execute_command(
         OwnedCmd::Status => {
             let stats = esp_alloc::HEAP.stats();
             let free = stats.size.saturating_sub(stats.current_usage);
-            let codes = ctx.user_db.count().await.unwrap_or(0);
+            let (storage_used, storage_capacity, codes) = {
+                let mut store = ctx.storage.lock().await;
+                let cap = store.capacity();
+                let (used, codes) = store.stats().await.unwrap_or((0, 0));
+                (used, cap, codes)
+            };
+            let storage_free = storage_capacity.saturating_sub(storage_used);
 
             let _ = writeln!(out, "\r\nDevice ID : {}\r", ctx.device_id);
             let _ = writeln!(out, "Firmware  : {} ({})\r", ctx.version, ctx.git_version);
@@ -255,6 +259,11 @@ async fn execute_command(
                 out,
                 "Heap      : {} free / {} total (max used {})\r",
                 free, stats.size, stats.max_usage
+            );
+            let _ = writeln!(
+                out,
+                "Storage   : {} free / {} total (used {})\r",
+                storage_free, storage_capacity, storage_used
             );
             let _ = writeln!(out, "Codes     : {}\r", codes);
             if PENDING_REBOOT.load(Ordering::Relaxed) {
