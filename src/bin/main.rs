@@ -27,7 +27,7 @@ use embassy_net::{Runner, Stack, StackResources};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    // clock::CpuClock,
+    clock::CpuClock,
     gpio::{DriveMode, Io, Level, Output, OutputConfig},
     peripherals::{TSENS, USB_DEVICE},
     rng::Rng,
@@ -112,8 +112,8 @@ async fn mqtt_task(stack: Stack<'static>, settings: MqttSettings, user_db: UserD
 async fn main(spawner: Spawner) -> ! {
     rtt_target::rtt_init_defmt!();
 
-    // let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
     // The following pins are used to bootstrap the chip. They are available
     // for use, but check the datasheet of the module for more information on them.
