@@ -18,7 +18,7 @@ use sequential_storage::{
         Cache, Uncached as UncachedKeys, page_pointers::ArrayPagePointers,
         page_states::ArrayPageStates,
     },
-    map::{Key, MapConfig, MapStorage, PostcardValue, SerializationError},
+    map::{Key, MapConfig, MapStorage, SerializationError},
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -97,12 +97,6 @@ impl Key for StorageKey {
         }
     }
 }
-
-/// Wrapper implementing [`PostcardValue`] for any serde type.
-#[derive(Serialize, serde::Deserialize)]
-struct PostcardWrapper<T>(T);
-
-impl<'de, T: Serialize + serde::Deserialize<'de>> PostcardValue<'de> for PostcardWrapper<T> {}
 
 /// Errors produced by [`Storage`].
 #[derive(Debug, defmt::Format)]
@@ -232,19 +226,19 @@ impl Storage {
     }
 
     /// Fetch and deserialize a value for `key`.
-    pub async fn get<T: Serialize + DeserializeOwned>(
+    pub async fn get<T: DeserializeOwned>(
         &mut self,
         key: StorageKey,
     ) -> Result<Option<T>, StorageError> {
-        let res = self
-            .map
-            .fetch_item::<PostcardWrapper<T>>(&mut self.buf.0, &key)
-            .await?;
-        Ok(res.map(|PostcardWrapper(v)| v))
+        let Some(bytes) = self.map.fetch_item::<&[u8]>(&mut self.buf.0, &key).await? else {
+            return Ok(None);
+        };
+        let val = postcard::from_bytes(bytes).map_err(|_| StorageError::Serialization)?;
+        Ok(Some(val))
     }
 
     /// Serialize and store `value` under `key`.
-    pub async fn set<T: Serialize + DeserializeOwned>(
+    pub async fn set<T: Serialize>(
         &mut self,
         key: StorageKey,
         value: &T,
