@@ -26,12 +26,17 @@ for arg in "$@"; do
     esac
 done
 
+BUILD_ARGS=()
 SIZE_ARGS=(-q)
 NM_ARGS=(-q)
 if [[ -n "$PROFILE_FLAG" ]]; then
+    BUILD_ARGS+=("$PROFILE_FLAG")
     SIZE_ARGS+=("$PROFILE_FLAG")
     NM_ARGS+=("$PROFILE_FLAG")
 fi
+
+# Run cargo build directly attached to the terminal so progress and colored output stream live.
+cargo build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
 
 SIZE_OUT="$(cargo size "${SIZE_ARGS[@]}" -- -A)"
 NM_OUT="$(cargo nm "${NM_ARGS[@]}" -- --print-size)"
