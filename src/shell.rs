@@ -30,11 +30,13 @@ impl<'a, const N: usize> BufferedWriter<'a, N> {
     }
 }
 
-impl<const N: usize> embedded_io_06::ErrorType for BufferedWriter<'_, N> {
+// TODO: Replace `embedded_cli::__private::io` trait implementations once a new version of
+// `embedded-cli` is released with `embedded-io` 0.7+ support.
+impl<const N: usize> embedded_cli::__private::io::ErrorType for BufferedWriter<'_, N> {
     type Error = Infallible;
 }
 
-impl<const N: usize> embedded_io_06::Write for BufferedWriter<'_, N> {
+impl<const N: usize> embedded_cli::__private::io::Write for BufferedWriter<'_, N> {
     fn write(&mut self, data: &[u8]) -> Result<usize, Self::Error> {
         let mut out = self.buf.borrow_mut();
         let mut overflow = false;

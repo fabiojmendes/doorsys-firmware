@@ -505,8 +505,6 @@ dependencies = [
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-cli",
- "embedded-io 0.6.1",
- "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "embedded-storage",
  "embedded-storage-async",
