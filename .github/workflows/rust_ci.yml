@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -41,14 +41,14 @@ jobs:
     permissions:
       contents: write
     env:
-      PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}-${{github.ref_name}}
+      PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}
     strategy:
       matrix:
         chip: ["esp32c3"]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate version
         run: |
@@ -82,7 +82,7 @@ jobs:
           tar -czvf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME
 
       - name: Publish release
-        uses: ghalactic/github-release-from-tag@v5
+        uses: ghalactic/github-release-from-tag@v6
         with:
           prerelease: "false"
           generateReleaseNotes: "true"
