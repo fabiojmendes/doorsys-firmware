@@ -2,99 +2,114 @@
 
 # Doorsys firmware
 
-> [!NOTE]
->
-> The [esp-hal](https://github.com/esp-rs/esp-hal) is now officially supported
-> by Espressif Systems. Eventually this firmware should be migrated to that
-> version using the `no_std` abstraction layer
-
-Doorsys is a door access control system for the esp32-c3 microcontroller. For an
-overview of the other components in the platform, check out
+Doorsys is a `no_std` door access control firmware for the ESP32-C3
+microcontroller built on [`esp-hal`](https://github.com/esp-rs/esp-hal) and the
+[Embassy](https://embassy.dev/) async runtime. For an overview of the other
+components in the platform, check out
 [Autosys](https://github.com/fabiojmendes/autosys).
 
-This firmware is designed around the concept of multiple independent tasks that
-communicate via multi-producer, single-consumer
-([mpsc](https://doc.rust-lang.org/std/sync/mpsc/index.html)) channels.
+This firmware is designed around multiple cooperative Embassy tasks that
+communicate via [`embassy-sync`](https://docs.rs/embassy-sync) channels and
+signals.
 
 Its main responsibilities are:
 
 - Activating the relay circuit to open the door upon successful input
-- Reading user input from the Wiegand reader and validating the user code
-- Sending audit information via MQTT for all entry attempts
-- Updating its internal database of valid codes based on messages received from
-  the MQTT broker
-- Sending health checks for observability
-- Keeping the time up-to-date using NTP to ensure consistent audit logs
+- Reading user input from the Wiegand reader (`GPIO4`/`GPIO5`) and validating
+  the user code directly against flash storage
+- Driving keypad buzzer/LED feedback (`GPIO7`, open-drain)
+- Sending audit information via MQTT v5 for all entry attempts
+- Updating its flash database of valid codes based on messages received from the
+  MQTT broker (`doorsys/user`)
+- Sending periodic heap and storage health metrics (`doorsys/status`)
+- Keeping the wall clock synchronized via SNTP (`pool.ntp.org`)
+- Providing an interactive USB-Serial-JTAG shell for provisioning and diagnostics
 
 ## Necessary tooling
 
-Install the necessary tooling as described in the
-[prerequisites section](https://github.com/esp-rs/esp-idf-template#prerequisites)
-of the esp-idf-template. You can opt for the RISC-V alternative path as this
-project is meant to run on an ESP32-C3 microcontroller.
+1. Install the stable Rust toolchain with the `riscv32imc-unknown-none-elf`
+   target and `rust-src` component (automatically selected by
+   `rust-toolchain.toml`):
 
-## Flashing the firmware
+   ```shell
+   rustup target add riscv32imc-unknown-none-elf
+   rustup component add rust-src
+   ```
 
-```shell
-# Optionally wipe flash before starting
-espflash erase-flash --port /dev/port
+2. Install [`probe-rs`](https://probe.rs/) (used as the default Cargo runner for
+   flashing and `defmt` RTT logging) or [`espflash`](https://github.com/esp-rs/espflash).
 
-espflash flash --port /dev/port doorsys-firmware-<version>.elf
-```
-
-## Initial configuration
-
-On first launch Doorsys needs to be provisioned with configurations for the
-Wi-Fi network and also an MQTT server to communicate with.
-
-Create a TOML configuration file using the example below as reference. For
-different authentication methods check this
-[enum](https://github.com/esp-rs/embedded-svc/blob/d4d86fcbc69f8a0a41b9ad735824c6ce22b1febe/src/wifi.rs#L28).
-
-```toml
-[wifi]
-ssid = "MySSID"
-password = "secret"
-auth = "WPA2Personal"
-
-[mqtt]
-username = "username"
-password = "password"
-url = "mqtt://mqtt.example.com:1883"
-```
-
-Upload a configuration file by connecting to the default hotspot, for example:
-`ESP_AABBCC` on port 23
+## Building and flashing
 
 ```shell
-nc -w1 192.168.71.1 23 < config.toml
+# Build and flash with defmt logging via probe-rs
+cargo run --release
+
+# Or flash using espflash
+espflash flash --port /dev/cu.usbmodemXXXX target/riscv32imc-unknown-none-elf/release/doorsys-firmware
 ```
+
+## Initial configuration (USB shell)
+
+Doorsys exposes an interactive command-line shell over the ESP32-C3's built-in
+USB-Serial-JTAG CDC serial port. Connect to the serial port with any terminal
+emulator (e.g. `tio`, `picocom`, or `screen`):
+
+```shell
+screen /dev/cu.usbmodemXXXX 115200
+```
+
+At the `doorsys>` prompt, configure Wi-Fi and MQTT and then reboot:
+
+```text
+doorsys> help
+doorsys> wifi MySSID "my-secret-password" --auth wpa2
+doorsys> mqtt mqtt://mqtt.example.com:1883 username password
+doorsys> config
+doorsys> reboot
+```
+
+Available shell commands:
+
+- `status` — Show device ID, firmware version, Wi-Fi/IPv4 state, MQTT state,
+  SNTP sync status, heap usage, and stored code count
+- `config` — Show stored Wi-Fi and MQTT settings (with passwords masked)
+- `wifi <ssid> <password> [--auth wpa2|wpawpa2|wpa|wep|open]` — Save Wi-Fi
+  station credentials
+- `mqtt <mqtt://host[:port]> <username> <password>` — Save MQTT broker settings
+- `codes list | count | add <code> | del <code>` — Inspect or modify stored
+  access codes
+- `open` — Trigger the door relay for 4 seconds
+- `reboot` — Restart the microcontroller
+- `factory-reset --confirm` — Erase the storage partition and restart
 
 ## Reset to factory
 
-To reset the device configuration execute
+From the USB shell:
 
-```shell
-espflash erase-region --port /dev/port 0x9000 0x6000
+```text
+doorsys> factory-reset --confirm
 ```
 
-This command erases the NVS partition and wipes all configurations. On next
-reboot, Doorsys restarts in AP mode so you can follow the steps for
-[initial configuration](#initial-configuration).
+Or using `espflash`:
+
+```shell
+espflash erase-region --port /dev/cu.usbmodemXXXX 0x9000 0x6000
+```
 
 ## Usage
 
-After completing the initial configuration, and making the connections as
+After completing the initial configuration and making the connections as
 described in the [hardware](https://github.com/fabiojmendes/doorsys-hardware),
-the system should be ready to use.
+the system is ready to use.
 
-To operate the door using the keypad, the user should enter the 6 digits pin
-followed by the `#` key. Once a valid sequence is entered, the keypad emits a
-sound and the relay is activated for 4 seconds allowing the user to open the
-door. Tapping a badge doesn't require a `#` press as it automatically validates
+To operate the door using the keypad, enter the PIN followed by the `#` key.
+Once a valid sequence is entered, the keypad emits a continuous tone and the
+relay (`GPIO10`) is activated for 4 seconds allowing the user to open the door.
+Tapping an RFID badge does not require a `#` press as it automatically validates
 the code. At any point the `*` key may be used to cancel an erroneous input. If
-an invalid or incomplete pin is entered, a rapid intermittent sound is played
-notifying the user of the error. The same behavior is true for an invalid badge.
+an invalid or incomplete PIN is entered, a rapid intermittent sound is played
+notifying the user of the error. The same behavior applies to an invalid badge.
 
-Once a user starts typing a pin, they have 10 seconds to complete the sequence
+Once a user starts typing a PIN, they have 10 seconds to complete the sequence,
 otherwise the operation is cancelled.

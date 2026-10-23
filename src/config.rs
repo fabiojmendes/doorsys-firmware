@@ -1,106 +1,107 @@
-use core::str;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+//! Application configuration types (`WifiConfig` and `MqttConfig`) and persistence helpers.
 
-use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration};
-use esp_idf_svc::{
-    nvs::{EspNvs, EspNvsPartition, NvsDefault},
-    wifi::{AuthMethod, EspWifi},
-};
+use defmt::warn;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Debug)]
-struct Config {
-    wifi: WifiConfig,
-    mqtt: MqttConfig,
-}
+use crate::{
+    storage::{SharedStorage, StorageError, StorageKey},
+    wifi::WifiCredentials,
+};
 
-#[derive(Deserialize, Debug)]
-struct WifiConfig {
-    ssid: String,
-    password: String,
-    auth: AuthMethod,
-}
+/// Default MQTT TCP port when not specified in the broker URL.
+pub const DEFAULT_MQTT_PORT: u16 = 1883;
 
-#[derive(Serialize, Deserialize, Debug)]
+/// Stored MQTT broker configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, defmt::Format)]
 pub struct MqttConfig {
-    pub url: String,
-    pub username: String,
-    pub password: String,
+    pub url: heapless::String<96>,
+    pub username: heapless::String<64>,
+    pub password: heapless::String<64>,
 }
 
-/// Struct that keeps track of the configurations of the firmware.
-/// It is also capable to start the configuration socket for config updates
-pub struct DoorsysConfig {
-    nvs: EspNvs<NvsDefault>,
+impl MqttConfig {
+    /// Parse `mqtt://host[:port]` (or bare `host[:port]`) into `(host, port)`.
+    pub fn parse_endpoint(&self) -> Option<(heapless::String<64>, u16)> {
+        parse_mqtt_url(self.url.as_str())
+    }
 }
 
-impl DoorsysConfig {
-    pub fn new(nvs_part: EspNvsPartition<NvsDefault>) -> anyhow::Result<Self> {
-        Ok(DoorsysConfig {
-            nvs: EspNvs::new(nvs_part, "config", true)?,
-        })
+/// Parse an `mqtt://host[:port]` URL into `(host, port)`.
+pub fn parse_mqtt_url(url: &str) -> Option<(heapless::String<64>, u16)> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
     }
 
-    pub fn read_mqtt_configs(&self) -> anyhow::Result<MqttConfig> {
-        let mut buf = [0; 256];
-        if let Ok(Some(slice)) = self.nvs.get_blob("mqtt", &mut buf) {
-            let mqtt_config = postcard::from_bytes(slice)?;
-            log::info!("bytes read for mqtt configuration");
-            return Ok(mqtt_config);
+    let rest = if let Some(after) = trimmed.strip_prefix("mqtt://") {
+        after
+    } else if trimmed.contains("://") {
+        return None;
+    } else {
+        trimmed
+    };
+
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() {
+        return None;
+    }
+
+    let (host_str, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
+        let parsed_port: u16 = p.parse().ok()?;
+        if parsed_port == 0 {
+            return None;
         }
-        anyhow::bail!("No mqtt config found");
+        (h, parsed_port)
+    } else {
+        (host_port, DEFAULT_MQTT_PORT)
+    };
+
+    if host_str.is_empty() {
+        return None;
     }
 
-    /// Run the config server on port 23 and wait for new connections
-    /// Once a valid configuration is uploaded this method will apply
-    /// the configs, close the socket and return.
-    /// This is meant to be ran only during the first boot if not previous configs are found
-    pub fn run_config_server(&mut self, wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<()> {
-        let listener = TcpListener::bind("0.0.0.0:23")?;
-        // accept connections and process them serially
-        for stream_res in listener.incoming() {
-            log::info!("New connection: {:?}", stream_res);
-            match stream_res {
-                Ok(mut stream) => {
-                    if let Err(e) = self.apply_config(&mut stream, wifi) {
-                        log::error!("Error parsing configuration: {}", e);
-                        writeln!(stream, "Error parsing configuration {}", e)?;
-                    } else {
-                        // Close config server and continue with boot proccess
-                        break;
-                    }
-                }
-                Err(e) => {
-                    log::error!("Error: {}", e);
-                }
-            }
+    let host = heapless::String::try_from(host_str).ok()?;
+    Some((host, port))
+}
+
+/// Load Wi-Fi credentials from flash storage.
+pub async fn load_wifi(storage: &'static SharedStorage) -> Option<WifiCredentials> {
+    match storage.lock().await.get(StorageKey::WifiConfig).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!("Failed to read Wi-Fi config from flash: {:?}", e);
+            None
         }
-        Ok(())
     }
+}
 
-    fn apply_config(
-        &mut self,
-        stream: &mut TcpStream,
-        wifi: &mut BlockingWifi<EspWifi>,
-    ) -> anyhow::Result<()> {
-        let mut file = String::new();
-        stream.read_to_string(&mut file)?;
-        log::info!("New config\n{}", file);
-        let config: Config = toml::from_str(&file)?;
-        let payload = postcard::to_allocvec(&config.mqtt)?;
-        self.nvs.set_blob("mqtt", &payload)?;
+/// Save Wi-Fi credentials to flash storage.
+pub async fn save_wifi(
+    storage: &'static SharedStorage,
+    creds: &WifiCredentials,
+) -> Result<(), StorageError> {
+    storage
+        .lock()
+        .await
+        .set(StorageKey::WifiConfig, creds)
+        .await
+}
 
-        let wifi_config = ClientConfiguration {
-            ssid: config.wifi.ssid.as_str().try_into().unwrap(),
-            password: config.wifi.password.as_str().try_into().unwrap(),
-            auth_method: config.wifi.auth,
-            ..Default::default()
-        };
-        writeln!(stream, "Success! Appying configs")?;
-        wifi.stop()?;
-        wifi.set_configuration(&Configuration::Client(wifi_config))?;
-        wifi.start()?;
-        Ok(())
+/// Load MQTT configuration from flash storage.
+pub async fn load_mqtt(storage: &'static SharedStorage) -> Option<MqttConfig> {
+    match storage.lock().await.get(StorageKey::MqttConfig).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!("Failed to read MQTT config from flash: {:?}", e);
+            None
+        }
     }
+}
+
+/// Save MQTT configuration to flash storage.
+pub async fn save_mqtt(
+    storage: &'static SharedStorage,
+    cfg: &MqttConfig,
+) -> Result<(), StorageError> {
+    storage.lock().await.set(StorageKey::MqttConfig, cfg).await
 }

@@ -1,96 +1,104 @@
-use core::ffi::c_void;
-use std::{
-    ffi::CString,
-    marker::PhantomPinned,
-    pin::Pin,
-    ptr,
-    sync::mpsc::{self, Receiver, Sender},
+//! Reusable ISR-driven Wiegand protocol reader for `esp-hal`.
+//!
+//! Captures falling-edge pulses on `D0` and `D1` inside a GPIO interrupt handler so individual
+//! ~50 µs pulses are never missed while the async executor is busy with Wi-Fi or flash operations,
+//! then frames and decodes 4-bit keypad presses and 26-bit RFID fobs asynchronously.
+
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
-use esp_idf_svc::{
-    hal::gpio::InputPin,
-    sys::{
-        esp, esp_timer_create, esp_timer_create_args_t, esp_timer_delete,
-        esp_timer_dispatch_t_ESP_TIMER_TASK, esp_timer_handle_t, esp_timer_start_once,
-        esp_timer_stop, gpio_config, gpio_config_t, gpio_get_level,
-        gpio_int_type_t_GPIO_INTR_DISABLE, gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_isr_handler_add,
-        gpio_isr_handler_remove, gpio_mode_t_GPIO_MODE_INPUT, gpio_reset_pin, gpio_set_intr_type,
-    },
+use critical_section::Mutex;
+use defmt::{info, warn};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_time::{Duration, Instant, Timer};
+use esp_hal::{
+    gpio::{Event, Input, InputConfig, InputPin, Io, Pull},
+    handler, ram,
 };
 
-const WIEGAND_TIMEOUT: u64 = 50000; // 50ms
-const BUFFER_SIZE: usize = 4;
+/// Quiet window after the last falling edge before a Wiegand frame is considered complete.
+const WIEGAND_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
 
-#[link_section = ".iram0.text"]
-unsafe extern "C" fn wiegand_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
-    let reader = &mut *(arg as *mut Reader<D0, D1>);
-    let d0 = gpio_get_level(reader.d0_gpio.pin().into());
-    let d1 = gpio_get_level(reader.d1_gpio.pin().into());
-    if d0 == d1 {
-        return;
-    }
-    // Overflow
-    if reader.bits > reader.data.len() * 8 {
-        return;
-    }
+/// Polling interval while waiting for the frame quiet window to elapse.
+const WIEGAND_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-    esp_timer_stop(reader.timer);
+/// Maximum number of bytes buffered per Wiegand frame (32 bits).
+pub const BUFFER_SIZE: usize = 4;
 
-    let value = if d0 == 0 { 0 } else { 0x80 };
-    reader.data[reader.bits / 8] |= value >> (reader.bits % 8);
-    reader.bits += 1;
-
-    esp_timer_start_once(reader.timer, WIEGAND_TIMEOUT);
+struct IsrState {
+    d0: Input<'static>,
+    d1: Input<'static>,
+    bits: usize,
+    data: [u8; BUFFER_SIZE],
+    last_edge: Option<Instant>,
 }
 
-unsafe extern "C" fn timer_interrupt<D0: InputPin, D1: InputPin>(arg: *mut c_void) {
-    let reader = &mut *(arg as *mut Reader<D0, D1>);
-    reader.stop();
+static ISR_STATE: Mutex<RefCell<Option<IsrState>>> = Mutex::new(RefCell::new(None));
+static EDGE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static READER_TAKEN: AtomicBool = AtomicBool::new(false);
 
-    let packet = Packet::new(reader.bits, reader.data);
+#[handler]
+#[ram]
+fn gpio_isr() {
+    critical_section::with(|cs| {
+        let mut borrow = ISR_STATE.borrow_ref_mut(cs);
+        let Some(state) = borrow.as_mut() else {
+            return;
+        };
 
-    if let Err(e) = reader.reader_tx.send(packet) {
-        log::error!("send error {}", e);
-    }
-    reader.reset();
+        let d0_trig = state.d0.is_interrupt_set();
+        let d1_trig = state.d1.is_interrupt_set();
+        state.d0.clear_interrupt();
+        state.d1.clear_interrupt();
+
+        if d0_trig == d1_trig {
+            return;
+        }
+
+        if state.bits < state.data.len() * 8 {
+            let value: u8 = if d0_trig { 0 } else { 0x80 };
+            state.data[state.bits / 8] |= value >> (state.bits % 8);
+            state.bits += 1;
+        }
+
+        state.last_edge = Some(Instant::now());
+        EDGE_SIGNAL.signal(());
+    });
 }
 
-/// Check parity bits 25 (even) and 0 (odd)
+/// Check parity bits 25 (even) and 0 (odd) on a 26-bit Wiegand frame.
 ///
-/// Reference:
-/// https://getsafeandsound.com/blog/26-bit-wiegand-format/
-/// Calculator
-/// http://www.ccdesignworks.com/wiegand_calc.htm
-fn parity_check_26bits(mut rfid: u32) -> bool {
+/// Reference: <https://getsafeandsound.com/blog/26-bit-wiegand-format/>
+pub fn parity_check_26bits(mut rfid: u32) -> bool {
     // Odd parity is checked over the rightmost 13 bits.
     let mut count = 0;
     for _ in 0..13 {
         count += rfid & 1;
         rfid >>= 1;
     }
-    if count % 2 == 0 {
+    if count.is_multiple_of(2) {
         return false;
     }
 
-    // Even parity is checked over the leftmost 13 bits
+    // Even parity is checked over the leftmost 13 bits.
     let mut count = 0;
     for _ in 0..13 {
         count += rfid & 1;
         rfid >>= 1;
     }
-    count % 2 != 1
+    count.is_multiple_of(2)
 }
 
-/// Packet read from the wiegand interface
-/// It can be a card tap, a key press or undefined bits
-#[derive(Debug)]
+/// Decoded packet read from the Wiegand interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum Packet {
-    Key {
-        key: u8,
-    },
-    Card {
-        rfid: i32,
-    },
+    /// 4-bit keypad key press.
+    Key { key: u8 },
+    /// 26-bit Wiegand RFID card/fob code.
+    Card { rfid: i32 },
+    /// Unrecognized bit pattern or parity failure.
     Unknown {
         bits: usize,
         data: [u8; BUFFER_SIZE],
@@ -98,154 +106,117 @@ pub enum Packet {
 }
 
 impl Packet {
-    fn new(bits: usize, data: [u8; BUFFER_SIZE]) -> Self {
-        log::info!("data received; bits: {}, data: {:02X?}", bits, data);
+    /// Decode a raw bit count and MSB-packed buffer into a [`Packet`].
+    pub fn decode(bits: usize, data: [u8; BUFFER_SIZE]) -> Self {
+        info!("Wiegand data received; bits: {}, data: {:02X}", bits, data);
         match bits {
             4 => Self::Key { key: data[0] >> 4 },
             26 => {
-                let mut rfid: u32 = (data[0] as u32) << 24
-                    | (data[1] as u32) << 16
-                    | (data[2] as u32) << 8
-                    | (data[3] as u32);
+                let mut rfid: u32 = (u32::from(data[0]) << 24)
+                    | (u32::from(data[1]) << 16)
+                    | (u32::from(data[2]) << 8)
+                    | u32::from(data[3]);
 
-                // Remove padding bits
+                // Remove padding bits.
                 rfid >>= 6;
 
                 if !parity_check_26bits(rfid) {
-                    log::warn!("Parity check failed");
+                    warn!("Wiegand 26-bit parity check failed");
                     return Self::Unknown { bits, data };
                 }
 
-                // Remove partiy check bits
+                // Remove parity check bits.
                 rfid &= !(1 << 25);
                 rfid >>= 1;
 
-                let rfid = rfid as i32;
-
-                Self::Card { rfid }
+                Self::Card { rfid: rfid as i32 }
             }
             _ => Self::Unknown { bits, data },
         }
     }
 }
 
-/// Wiegand reader
-/// This is the implementation the wiegand protocol using 2 gpio pins.
-/// The interrupt service must be installed as this code relies on interrupts
-/// to read the sinterface signals.
-///
-/// Usage:
-/// ```rust
-/// // Installs the generic GPIO interrupt handler
-/// esp!(unsafe { gpio_install_isr_service(ESP_INTR_FLAG_IRAM as i32) })?;
-///
-/// let (_reader, channel) = Reader::new(d0, d1)?;
-/// loop {
-///     let packet = channel.recv()?;
-///     // proccess packet
-/// }
-///
-/// ```
-pub struct Reader<D0: InputPin, D1: InputPin> {
-    bits: usize,
-    data: [u8; BUFFER_SIZE],
-    d0_gpio: D0,
-    d1_gpio: D1,
-    timer: esp_timer_handle_t,
-    reader_tx: Sender<Packet>,
-    _marker: PhantomPinned,
+/// Async Wiegand reader bound to two GPIO input pins (`D0` and `D1`).
+pub struct Reader {
+    _private: (),
 }
 
-impl<D0: InputPin, D1: InputPin> Reader<D0, D1> {
-    pub fn new(d0_gpio: D0, d1_gpio: D1) -> anyhow::Result<(Pin<Box<Self>>, Receiver<Packet>)> {
-        let (reader_tx, reader_rx) = mpsc::channel();
-        let reader = Reader {
-            d0_gpio,
-            d1_gpio,
-            data: [0; BUFFER_SIZE],
-            bits: 0,
-            timer: ptr::null_mut(),
-            reader_tx,
-            _marker: PhantomPinned,
-        };
-        let mut boxed = Box::pin(reader);
-        let reader_ref = unsafe { boxed.as_mut().get_unchecked_mut() };
-        Reader::init(reader_ref)?;
-        Ok((boxed, reader_rx))
+impl Reader {
+    /// Configure `d0_pin` and `d1_pin` with internal pull-ups and falling-edge interrupts, and
+    /// install the GPIO interrupt handler on `io`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called more than once (the GPIO interrupt vector is chip-global).
+    pub fn new(
+        io: &mut Io<'_>,
+        d0_pin: impl InputPin + 'static,
+        d1_pin: impl InputPin + 'static,
+    ) -> Self {
+        critical_section::with(|_cs| {
+            assert!(
+                !READER_TAKEN.load(Ordering::Relaxed),
+                "Wiegand Reader already initialized"
+            );
+            READER_TAKEN.store(true, Ordering::Relaxed);
+        });
+
+        let pull_up = InputConfig::default().with_pull(Pull::Up);
+        let mut d0 = Input::new(d0_pin, pull_up);
+        let mut d1 = Input::new(d1_pin, pull_up);
+
+        io.set_interrupt_handler(gpio_isr);
+
+        critical_section::with(|cs| {
+            d0.listen(Event::FallingEdge);
+            d1.listen(Event::FallingEdge);
+            *ISR_STATE.borrow_ref_mut(cs) = Some(IsrState {
+                d0,
+                d1,
+                bits: 0,
+                data: [0; BUFFER_SIZE],
+                last_edge: None,
+            });
+        });
+
+        Self { _private: () }
     }
 
-    fn init(&mut self) -> anyhow::Result<()> {
-        let reader_ptr = self as *mut _ as *mut c_void;
+    /// Wait for the next complete Wiegand packet.
+    ///
+    /// This method is cancel-safe: if dropped by `with_timeout` before any edge arrives, no bits
+    /// are lost.
+    pub async fn read(&mut self) -> Packet {
+        loop {
+            EDGE_SIGNAL.wait().await;
 
-        let timer_config = esp_timer_create_args_t {
-            name: CString::new("wiegand")?.into_raw(),
-            arg: reader_ptr,
-            callback: Some(timer_interrupt::<D0, D1>),
-            dispatch_method: esp_timer_dispatch_t_ESP_TIMER_TASK,
-            skip_unhandled_events: true,
-        };
+            loop {
+                Timer::after(WIEGAND_POLL_INTERVAL).await;
 
-        esp!(unsafe { esp_timer_create(&timer_config, &mut self.timer) })?;
+                let frame = critical_section::with(|cs| {
+                    let mut borrow = ISR_STATE.borrow_ref_mut(cs);
+                    let state = borrow.as_mut()?;
+                    let last = state.last_edge?;
+                    if Instant::now().duration_since(last) >= WIEGAND_FRAME_TIMEOUT {
+                        let bits = state.bits;
+                        let data = state.data;
+                        state.bits = 0;
+                        state.data = [0; BUFFER_SIZE];
+                        state.last_edge = None;
+                        EDGE_SIGNAL.reset();
+                        Some((bits, data))
+                    } else {
+                        None
+                    }
+                });
 
-        // Configures d0 and d1
-        let io_conf = gpio_config_t {
-            pin_bit_mask: (1 << self.d0_gpio.pin() | 1 << self.d1_gpio.pin()),
-            mode: gpio_mode_t_GPIO_MODE_INPUT,
-            pull_up_en: true.into(),
-            pull_down_en: false.into(),
-            intr_type: gpio_int_type_t_GPIO_INTR_NEGEDGE,
-        };
-
-        unsafe {
-            // Writes the configuration to the registers
-            esp!(gpio_config(&io_conf))?;
-
-            // Registers our function with the generic GPIO interrupt handler
-            // This assumes gpio_install_isr_service was called before
-            esp!(gpio_isr_handler_add(
-                self.d0_gpio.pin().into(),
-                Some(wiegand_interrupt::<D0, D1>),
-                reader_ptr
-            ))?;
-            esp!(gpio_isr_handler_add(
-                self.d1_gpio.pin().into(),
-                Some(wiegand_interrupt::<D0, D1>),
-                reader_ptr
-            ))?;
-        }
-
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        unsafe {
-            esp_timer_stop(self.timer);
-            gpio_set_intr_type(self.d0_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_DISABLE);
-            gpio_set_intr_type(self.d1_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_DISABLE);
-        }
-    }
-
-    fn reset(&mut self) {
-        unsafe {
-            gpio_set_intr_type(self.d0_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
-            gpio_set_intr_type(self.d1_gpio.pin().into(), gpio_int_type_t_GPIO_INTR_NEGEDGE);
-        }
-        self.data = [0; BUFFER_SIZE];
-        self.bits = 0;
-    }
-}
-
-impl<D0: InputPin, D1: InputPin> Drop for Reader<D0, D1> {
-    fn drop(&mut self) {
-        unsafe {
-            esp_timer_stop(self.timer);
-            esp_timer_delete(self.timer);
-
-            gpio_isr_handler_remove(self.d0_gpio.pin().into());
-            gpio_reset_pin(self.d0_gpio.pin().into());
-
-            gpio_isr_handler_remove(self.d1_gpio.pin().into());
-            gpio_reset_pin(self.d1_gpio.pin().into());
+                if let Some((bits, data)) = frame {
+                    if bits > 0 {
+                        return Packet::decode(bits, data);
+                    }
+                    break;
+                }
+            }
         }
     }
 }

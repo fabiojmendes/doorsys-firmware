@@ -1,0 +1,418 @@
+//! USB shell command definitions and async execution handlers.
+
+use core::{
+    fmt::Write as _,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use embedded_cli::{Command, cli::CliBuilder};
+use esp_hal::peripherals::USB_DEVICE;
+
+use crate::{
+    clock,
+    config::{self, MqttConfig},
+    door, mqtt,
+    shell::{BufferedWriter, TxBuffer, UsbShellIo},
+    storage::SharedStorage,
+    wifi::{self, AuthMethod, WifiCredentials, WifiStack},
+};
+
+/// Capacity of the `embedded-cli` output buffer. Must hold the largest single burst of CLI output
+/// (the generated `help` listing) since it is only drained between input bytes.
+const SHELL_TX_BUF_SIZE: usize = 1024;
+
+static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
+
+/// Top-level CLI commands available over the USB-Serial-JTAG shell.
+#[derive(Command)]
+enum CliCmd<'a> {
+    /// Show device ID, firmware version, uptime, Wi-Fi/IP, MQTT, time sync, heap, storage, and code count
+    Status,
+
+    /// Show stored Wi-Fi and MQTT configuration (passwords masked)
+    Config,
+
+    /// Configure Wi-Fi station credentials: wifi <ssid> <password> [--auth wpa2|wpawpa2|wpa|wep|open]
+    Wifi {
+        /// Wireless network SSID
+        ssid: &'a str,
+        /// Wireless network password (use "" for open networks)
+        password: &'a str,
+        /// Authentication method (default: wpa2)
+        #[arg(long)]
+        auth: Option<&'a str>,
+    },
+
+    /// Configure MQTT broker: mqtt <mqtt://host[:port]> <username> <password>
+    Mqtt {
+        /// Broker URL, e.g. mqtt://mqtt.example.com:1883
+        url: &'a str,
+        /// Broker username
+        username: &'a str,
+        /// Broker password
+        password: &'a str,
+    },
+
+    /// Pulse the door relay open for 4 seconds
+    Open,
+
+    /// Restart the microcontroller
+    Reboot,
+
+    /// Erase all stored configuration and codes, then restart (requires --confirm)
+    FactoryReset {
+        /// Confirm destructive factory reset
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+/// Owned command representation extracted from `embedded-cli`'s synchronous callback so we can
+/// execute async flash/network operations outside the callback.
+enum OwnedCmd {
+    Status,
+    Config,
+    Wifi {
+        ssid: heapless::String<32>,
+        password: heapless::String<64>,
+        auth: Option<heapless::String<16>>,
+    },
+    Mqtt {
+        url: heapless::String<96>,
+        username: heapless::String<64>,
+        password: heapless::String<64>,
+    },
+    Open,
+    Reboot,
+    FactoryReset {
+        confirm: bool,
+    },
+    ArgumentTooLong(&'static str),
+}
+
+impl OwnedCmd {
+    fn from_borrowed(cmd: CliCmd<'_>) -> Self {
+        match cmd {
+            CliCmd::Status => Self::Status,
+            CliCmd::Config => Self::Config,
+            CliCmd::Wifi {
+                ssid,
+                password,
+                auth,
+            } => {
+                let Ok(ssid) = heapless::String::try_from(ssid) else {
+                    return Self::ArgumentTooLong("ssid (max 32 chars)");
+                };
+                let Ok(password) = heapless::String::try_from(password) else {
+                    return Self::ArgumentTooLong("password (max 64 chars)");
+                };
+                let auth = match auth {
+                    Some(a) => match heapless::String::try_from(a) {
+                        Ok(s) => Some(s),
+                        Err(_) => return Self::ArgumentTooLong("auth"),
+                    },
+                    None => None,
+                };
+                Self::Wifi {
+                    ssid,
+                    password,
+                    auth,
+                }
+            }
+            CliCmd::Mqtt {
+                url,
+                username,
+                password,
+            } => {
+                let Ok(url) = heapless::String::try_from(url) else {
+                    return Self::ArgumentTooLong("url (max 96 chars)");
+                };
+                let Ok(username) = heapless::String::try_from(username) else {
+                    return Self::ArgumentTooLong("username (max 64 chars)");
+                };
+                let Ok(password) = heapless::String::try_from(password) else {
+                    return Self::ArgumentTooLong("password (max 64 chars)");
+                };
+                Self::Mqtt {
+                    url,
+                    username,
+                    password,
+                }
+            }
+            CliCmd::Open => Self::Open,
+            CliCmd::Reboot => Self::Reboot,
+            CliCmd::FactoryReset { confirm } => Self::FactoryReset { confirm },
+        }
+    }
+}
+
+/// Runtime context passed to the USB shell task.
+pub struct ShellContext {
+    pub device_id: heapless::String<32>,
+    pub version: &'static str,
+    pub git_version: &'static str,
+    pub storage: &'static SharedStorage,
+    pub net: Option<WifiStack>,
+}
+
+/// Run the interactive USB-Serial-JTAG configuration shell forever.
+pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! {
+    let mut io = UsbShellIo::new(usb_device);
+    let mut cmd_buf = [0u8; 192];
+    let mut hist_buf = [0u8; 256];
+    let tx_buf: TxBuffer<SHELL_TX_BUF_SIZE> = TxBuffer::new(heapless::Vec::new());
+
+    let mut cli = CliBuilder::default()
+        .writer(BufferedWriter::new(&tx_buf))
+        .command_buffer(cmd_buf.as_mut_slice())
+        .history_buffer(hist_buf.as_mut_slice())
+        .prompt("doorsys> ")
+        .build()
+        .expect("Failed to build CLI");
+
+    let mut rx_chunk = [0u8; 64];
+
+    loop {
+        io.drain(&tx_buf).await;
+
+        let n = io.read(&mut rx_chunk).await;
+        for &byte in &rx_chunk[..n] {
+            let mut captured: Option<OwnedCmd> = None;
+            let _ = cli.process_byte::<CliCmd<'_>, _>(
+                byte,
+                &mut CliCmd::processor(|_handle, command| {
+                    captured = Some(OwnedCmd::from_borrowed(command));
+                    Ok(())
+                }),
+            );
+
+            io.drain(&tx_buf).await;
+
+            if let Some(cmd) = captured {
+                let mut out = heapless::String::<512>::new();
+                execute_command(cmd, &ctx, &mut io, &mut out).await;
+                if !out.is_empty() {
+                    io.write_all(out.as_bytes()).await;
+                }
+            }
+        }
+    }
+}
+
+async fn execute_command(
+    cmd: OwnedCmd,
+    ctx: &ShellContext,
+    io: &mut UsbShellIo,
+    out: &mut heapless::String<512>,
+) {
+    match cmd {
+        OwnedCmd::ArgumentTooLong(field) => {
+            let _ = writeln!(out, "\r\nError: {} is too long\r", field);
+        }
+        OwnedCmd::Status => {
+            let stats = esp_alloc::HEAP.stats();
+            let free = stats.size.saturating_sub(stats.current_usage);
+            let (storage_used, storage_capacity, codes) = {
+                let mut store = ctx.storage.lock().await;
+                let cap = store.capacity();
+                let (used, codes) = store.stats().await.unwrap_or((0, 0));
+                (used, cap, codes)
+            };
+            let storage_free = storage_capacity.saturating_sub(storage_used);
+
+            let _ = writeln!(out, "\r\nDevice ID : {}\r", ctx.device_id);
+            let _ = writeln!(out, "Firmware  : {} ({})\r", ctx.version, ctx.git_version);
+            let _ = writeln!(out, "Uptime    : {}\r", clock::uptime());
+            let _ = writeln!(
+                out,
+                "Wi-Fi     : {}\r",
+                if wifi::is_connected() {
+                    "connected"
+                } else if ctx.net.is_some() {
+                    "disconnected"
+                } else {
+                    "not configured"
+                }
+            );
+            if let Some(net) = &ctx.net {
+                if let Some(v4) = net.stack.config_v4() {
+                    let _ = writeln!(out, "IPv4      : {}\r", v4.address);
+                } else {
+                    let _ = writeln!(out, "IPv4      : acquiring DHCP...\r");
+                }
+            }
+            let _ = writeln!(
+                out,
+                "MQTT      : {}\r",
+                if mqtt::is_connected() {
+                    "connected"
+                } else {
+                    "disconnected"
+                }
+            );
+            if clock::is_synced() {
+                let _ = writeln!(out, "Time      : synced ({}s)\r", clock::now_unix_secs());
+            } else {
+                let _ = writeln!(out, "Time      : not synced\r");
+            }
+            let _ = writeln!(
+                out,
+                "Heap      : {} free / {} total (max used {})\r",
+                free, stats.size, stats.max_usage
+            );
+            let _ = writeln!(
+                out,
+                "Storage   : {} free / {} total (used {})\r",
+                storage_free, storage_capacity, storage_used
+            );
+            let _ = writeln!(out, "Codes     : {}\r", codes);
+            if PENDING_REBOOT.load(Ordering::Relaxed) {
+                let _ = writeln!(
+                    out,
+                    "Notice    : configuration changed; run 'reboot' to apply\r"
+                );
+            }
+        }
+        OwnedCmd::Config => {
+            let _ = writeln!(out, "\r");
+            match config::load_wifi(ctx.storage).await {
+                Some(w) => {
+                    let masked = if w.password.is_empty() {
+                        "<empty>"
+                    } else {
+                        "********"
+                    };
+                    let _ = writeln!(
+                        out,
+                        "[wifi]\r\n  ssid     = {}\r\n  password = {}\r\n  auth     = {}\r",
+                        w.ssid,
+                        masked,
+                        w.auth.as_str()
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "[wifi]\r\n  <not configured>\r");
+                }
+            }
+            match config::load_mqtt(ctx.storage).await {
+                Some(m) => {
+                    let masked = if m.password.is_empty() {
+                        "<empty>"
+                    } else {
+                        "********"
+                    };
+                    let _ = writeln!(
+                        out,
+                        "[mqtt]\r\n  url      = {}\r\n  username = {}\r\n  password = {}\r",
+                        m.url, m.username, masked
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "[mqtt]\r\n  <not configured>\r");
+                }
+            }
+        }
+        OwnedCmd::Wifi {
+            ssid,
+            password,
+            auth,
+        } => {
+            let auth_method = match auth.as_deref() {
+                Some(a) => match AuthMethod::parse(a) {
+                    Some(m) => m,
+                    None => {
+                        let _ = writeln!(
+                            out,
+                            "\r\nError: invalid auth '{}'. Expected wpa2, wpawpa2, wpa, wep, or open\r",
+                            a
+                        );
+                        return;
+                    }
+                },
+                None => AuthMethod::Wpa2Personal,
+            };
+
+            let creds = WifiCredentials {
+                ssid,
+                password,
+                auth: auth_method,
+            };
+            if creds.to_station_config().is_err() {
+                let _ = writeln!(out, "\r\nError: invalid SSID or password length\r");
+                return;
+            }
+
+            match config::save_wifi(ctx.storage, &creds).await {
+                Ok(()) => {
+                    PENDING_REBOOT.store(true, Ordering::Relaxed);
+                    let _ = writeln!(
+                        out,
+                        "\r\nWi-Fi configuration saved. Run 'reboot' to apply.\r"
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "\r\nError saving Wi-Fi config: {:?}\r", e);
+                }
+            }
+        }
+        OwnedCmd::Mqtt {
+            url,
+            username,
+            password,
+        } => {
+            if config::parse_mqtt_url(url.as_str()).is_none() {
+                let _ = writeln!(
+                    out,
+                    "\r\nError: invalid MQTT URL '{}'. Expected mqtt://host[:port]\r",
+                    url
+                );
+                return;
+            }
+            let cfg = MqttConfig {
+                url,
+                username,
+                password,
+            };
+            match config::save_mqtt(ctx.storage, &cfg).await {
+                Ok(()) => {
+                    PENDING_REBOOT.store(true, Ordering::Relaxed);
+                    let _ = writeln!(
+                        out,
+                        "\r\nMQTT configuration saved. Run 'reboot' to apply.\r"
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "\r\nError saving MQTT config: {:?}\r", e);
+                }
+            }
+        }
+        OwnedCmd::Open => {
+            door::trigger_open();
+            let _ = writeln!(out, "\r\nDoor relay triggered.\r");
+        }
+        OwnedCmd::Reboot => {
+            io.write_all(b"\r\nRebooting...\r\n").await;
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+            esp_hal::system::software_reset();
+        }
+        OwnedCmd::FactoryReset { confirm } => {
+            if !confirm {
+                let _ = writeln!(
+                    out,
+                    "\r\nRefusing factory reset without --confirm. Run 'factory-reset --confirm'.\r"
+                );
+                return;
+            }
+            match ctx.storage.lock().await.erase_all().await {
+                Ok(()) => {
+                    io.write_all(b"\r\nFlash erased. Rebooting...\r\n").await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+                    esp_hal::system::software_reset();
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "\r\nError erasing flash: {:?}\r", e);
+                }
+            }
+        }
+    }
+}
