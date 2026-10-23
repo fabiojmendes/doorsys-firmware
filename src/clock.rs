@@ -108,7 +108,14 @@ impl defmt::Format for Uptime {
         let mins = (self.0 % 3_600) / 60;
         let secs = self.0 % 60;
         if days > 0 {
-            defmt::write!(f, "{=u64}d {=u64:02}h {=u64:02}m {=u64:02}s", days, hours, mins, secs);
+            defmt::write!(
+                f,
+                "{=u64}d {=u64:02}h {=u64:02}m {=u64:02}s",
+                days,
+                hours,
+                mins,
+                secs
+            );
         } else {
             defmt::write!(f, "{=u64:02}h {=u64:02}m {=u64:02}s", hours, mins, secs);
         }

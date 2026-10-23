@@ -61,11 +61,7 @@ fn enqueue_audit(code: i32, code_type: CodeType, success: bool) {
 }
 
 /// Run the Wiegand reader and keypad PIN entry loop forever.
-pub async fn run(
-    mut reader: Reader,
-    mut signal_pin: Output<'static>,
-    user_db: UserDb,
-) -> ! {
+pub async fn run(mut reader: Reader, mut signal_pin: Output<'static>, user_db: UserDb) -> ! {
     signal_pin.set_high();
     let mut keys: heapless::Vec<u8, MAX_PIN_LENGTH> = heapless::Vec::new();
 
