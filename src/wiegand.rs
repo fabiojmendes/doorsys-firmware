@@ -164,6 +164,7 @@ impl Reader {
         let pull_up = InputConfig::default().with_pull(Pull::Up);
         let mut d0 = Input::new(d0_pin, pull_up);
         let mut d1 = Input::new(d1_pin, pull_up);
+        info!("Creating reader with pins {} and {}", d0, d1);
 
         io.set_interrupt_handler(gpio_isr);
 
