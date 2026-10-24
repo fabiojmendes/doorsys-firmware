@@ -477,7 +477,7 @@ async fn send_telemetry<'c>(
     line.clear();
     let _ = write!(
         line,
-        "status,host={host} version={version},uptime={},codes={},temp={:.2} {time}",
+        "doorsys,host={host},version={version} uptime={},codes={},temp={:.2} {time}",
         t.uptime_secs, t.codes_count, t.temperature_celsius
     );
     publish_status_line(client, line.as_bytes()).await
