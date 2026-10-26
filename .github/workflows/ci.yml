@@ -31,6 +31,3 @@ jobs:
 
       - name: Run clippy command
         run: cargo clippy --release -- -D warnings
-
-      - name: Size
-        run: ./scripts/size-summary.sh
