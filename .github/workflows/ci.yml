@@ -1,0 +1,33 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches-ignore: 
+      - "release-please-**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: riscv32imc-unknown-none-elf
+          components: rust-src, clippy, rustfmt
+
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run fmt command
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy command
+        run: cargo clippy --release -- -D warnings

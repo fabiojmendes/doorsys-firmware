@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          release-type: rust
+
+  build-package:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        chip: ["esp32c3"]
+
+    env:
+      BASE_NAME: ${{github.event.repository.name}}
+      PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: riscv32imc-unknown-none-elf
+          components: rust-src
+
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run build command
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir $PACKAGE_NAME
+          cp target/riscv32imc-unknown-none-elf/release/${BASE_NAME} ${PACKAGE_NAME}/
+          cp README.md LICENSE scripts/example.lua $PACKAGE_NAME/
+          tar -czvf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME
+
+      - name: Attach Artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          gh release upload "${TAG}" "${PACKAGE_NAME}.tar.gz" --clobber
