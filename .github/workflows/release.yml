@@ -40,6 +40,7 @@ jobs:
     env:
       BASE_NAME: ${{github.event.repository.name}}
       PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
 
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +65,7 @@ jobs:
       - name: Package
         run: |
           mkdir $PACKAGE_NAME
-          cp target/riscv32imc-unknown-none-elf/release/${BASE_NAME} ${PACKAGE_NAME}/
+          cp target/riscv32imc-unknown-none-elf/release/${BASE_NAME} ${PACKAGE_NAME}/${BASE_NAME}-${TAG}
           cp README.md LICENSE scripts/example.lua $PACKAGE_NAME/
           tar -czvf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME
 
