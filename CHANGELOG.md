@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.2...v0.4.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **workflow:** add version to package name ([d7ce0a5](https://github.com/fabiojmendes/doorsys-firmware/commit/d7ce0a5aba9ba844decb1f5947662f74f662f4c4))
+
 ## [0.4.2](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.1...v0.4.2) (2026-10-26)
 
 
