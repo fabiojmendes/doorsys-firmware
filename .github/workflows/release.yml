@@ -4,6 +4,9 @@ on:
   push:
     branches: [ "master" ]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -36,7 +39,7 @@ jobs:
 
     env:
       BASE_NAME: ${{github.event.repository.name}}
-      PACKAGE_NAME: ${{env.BASE_NAME}}-${{matrix.chip}}
+      PACKAGE_NAME: ${{github.event.repository.name}}-${{matrix.chip}}
 
     steps:
       - uses: actions/checkout@v7

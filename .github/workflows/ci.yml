@@ -27,7 +27,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run fmt command
-        run: cargo fmt --all -- --check --color always
+        run: cargo fmt --all -- --check
 
       - name: Run clippy command
         run: cargo clippy --release -- -D warnings
