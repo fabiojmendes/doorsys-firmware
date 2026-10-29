@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.4](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.3...v0.4.4) (2026-10-29)
+
+
+### Bug Fixes
+
+* **mqtt:** improve mqtt connection in face of partial disconnects ([cb3fbe4](https://github.com/fabiojmendes/doorsys-firmware/commit/cb3fbe416fe280f766b013be7156212ca50a0770))
+* **wiegand:** display pin numbers on reader creation ([8b83843](https://github.com/fabiojmendes/doorsys-firmware/commit/8b8384307ae21c66d227fb81f422fac9d3b5d1bf))
+
 ## [0.4.3](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.2...v0.4.3) (2026-10-26)
 
 
