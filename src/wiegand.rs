@@ -25,7 +25,7 @@ const WIEGAND_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
 const WIEGAND_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Maximum number of bytes buffered per Wiegand frame (32 bits).
-pub const BUFFER_SIZE: usize = 4;
+const BUFFER_SIZE: usize = 4;
 
 struct IsrState {
     d0: Input<'static>,
@@ -160,11 +160,15 @@ impl Reader {
             );
             READER_TAKEN.store(true, Ordering::Relaxed);
         });
+        info!(
+            "Creating reader with pins {} and {}",
+            d0_pin.number(),
+            d1_pin.number()
+        );
 
         let pull_up = InputConfig::default().with_pull(Pull::Up);
         let mut d0 = Input::new(d0_pin, pull_up);
         let mut d1 = Input::new(d1_pin, pull_up);
-        info!("Creating reader with pins {} and {}", d0, d1);
 
         io.set_interrupt_handler(gpio_isr);
 
