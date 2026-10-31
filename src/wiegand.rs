@@ -1,74 +1,24 @@
-//! Reusable ISR-driven Wiegand protocol reader for `esp-hal`.
+//! Async Wiegand protocol reader for `esp-hal`.
 //!
-//! Captures falling-edge pulses on `D0` and `D1` inside a GPIO interrupt handler so individual
-//! ~50 µs pulses are never missed while the async executor is busy with Wi-Fi or flash operations,
-//! then frames and decodes 4-bit keypad presses and 26-bit RFID fobs asynchronously.
+//! Captures falling-edge pulses on `D0` and `D1` using async GPIO edge waits with a short glitch
+//! filter delay, then frames and decodes 4-bit keypad presses and 26-bit RFID fobs.
 
-use core::{
-    cell::RefCell,
-    sync::atomic::{AtomicBool, Ordering},
-};
-
-use critical_section::Mutex;
 use defmt::{info, warn};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_futures::select::{Either, select};
+use embassy_time::{Duration, Timer};
 use esp_hal::{
-    gpio::{Event, Input, InputConfig, InputPin, Io, Pull},
-    handler,
+    gpio::{Input, InputConfig, InputPin, Pull},
     peripherals::IO_MUX,
-    ram,
 };
 
 /// Quiet window after the last falling edge before a Wiegand frame is considered complete.
 const WIEGAND_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Polling interval while waiting for the frame quiet window to elapse.
-const WIEGAND_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Short delay after a falling edge before sampling GPIO state to filter out glitches and noise.
+const WIEGAND_GLITCH_DELAY: Duration = Duration::from_micros(5);
 
 /// Maximum number of bytes buffered per Wiegand frame (32 bits).
 const BUFFER_SIZE: usize = 4;
-
-struct IsrState {
-    d0: Input<'static>,
-    d1: Input<'static>,
-    bits: usize,
-    data: [u8; BUFFER_SIZE],
-    last_edge: Option<Instant>,
-}
-
-static ISR_STATE: Mutex<RefCell<Option<IsrState>>> = Mutex::new(RefCell::new(None));
-static EDGE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static READER_TAKEN: AtomicBool = AtomicBool::new(false);
-
-#[handler]
-#[ram]
-fn gpio_isr() {
-    critical_section::with(|cs| {
-        let mut borrow = ISR_STATE.borrow_ref_mut(cs);
-        let Some(state) = borrow.as_mut() else {
-            return;
-        };
-
-        state.d0.clear_interrupt();
-        state.d1.clear_interrupt();
-        let d0_trig = state.d0.is_low();
-        let d1_trig = state.d1.is_low();
-
-        if d0_trig == d1_trig {
-            return;
-        }
-
-        if state.bits < state.data.len() * 8 {
-            let value: u8 = if d0_trig { 0 } else { 0x80 };
-            state.data[state.bits / 8] |= value >> (state.bits % 8);
-            state.bits += 1;
-        }
-
-        state.last_edge = Some(Instant::now());
-        EDGE_SIGNAL.signal(());
-    });
-}
 
 /// Check parity bits 25 (even) and 0 (odd) on a 26-bit Wiegand frame.
 ///
@@ -140,28 +90,13 @@ impl Packet {
 
 /// Async Wiegand reader bound to two GPIO input pins (`D0` and `D1`).
 pub struct Reader {
-    _private: (),
+    d0: Input<'static>,
+    d1: Input<'static>,
 }
 
 impl Reader {
-    /// Configure `d0_pin` and `d1_pin` with internal pull-ups and falling-edge interrupts, and
-    /// install the GPIO interrupt handler on `io`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called more than once (the GPIO interrupt vector is chip-global).
-    pub fn new(
-        io: &mut Io<'_>,
-        d0_pin: impl InputPin + 'static,
-        d1_pin: impl InputPin + 'static,
-    ) -> Self {
-        critical_section::with(|_cs| {
-            assert!(
-                !READER_TAKEN.load(Ordering::Relaxed),
-                "Wiegand Reader already initialized"
-            );
-            READER_TAKEN.store(true, Ordering::Relaxed);
-        });
+    /// Configure `d0_pin` and `d1_pin` with internal pull-ups and hardware pad glitch filters.
+    pub fn new(d0_pin: impl InputPin + 'static, d1_pin: impl InputPin + 'static) -> Self {
         info!(
             "Creating reader with pins {} and {}",
             d0_pin.number(),
@@ -176,60 +111,44 @@ impl Reader {
             });
 
         let pull_up = InputConfig::default().with_pull(Pull::Up);
-        let mut d0 = Input::new(d0_pin, pull_up);
-        let mut d1 = Input::new(d1_pin, pull_up);
+        let d0 = Input::new(d0_pin, pull_up);
+        let d1 = Input::new(d1_pin, pull_up);
 
-        io.set_interrupt_handler(gpio_isr);
-
-        critical_section::with(|cs| {
-            d0.listen(Event::FallingEdge);
-            d1.listen(Event::FallingEdge);
-            *ISR_STATE.borrow_ref_mut(cs) = Some(IsrState {
-                d0,
-                d1,
-                bits: 0,
-                data: [0; BUFFER_SIZE],
-                last_edge: None,
-            });
-        });
-
-        Self { _private: () }
+        Self { d0, d1 }
     }
 
     /// Wait for the next complete Wiegand packet.
-    ///
-    /// This method is cancel-safe: if dropped by `with_timeout` before any edge arrives, no bits
-    /// are lost.
     pub async fn read(&mut self) -> Packet {
+        let mut bits: usize = 0;
+        let mut data = [0u8; BUFFER_SIZE];
+
         loop {
-            EDGE_SIGNAL.wait().await;
+            let edge = select(
+                self.d0.wait_for_falling_edge(),
+                self.d1.wait_for_falling_edge(),
+            );
 
-            loop {
-                Timer::after(WIEGAND_POLL_INTERVAL).await;
+            if bits == 0 {
+                edge.await;
+            } else if let Either::Second(()) =
+                select(edge, Timer::after(WIEGAND_FRAME_TIMEOUT)).await
+            {
+                return Packet::decode(bits, data);
+            }
 
-                let frame = critical_section::with(|cs| {
-                    let mut borrow = ISR_STATE.borrow_ref_mut(cs);
-                    let state = borrow.as_mut()?;
-                    let last = state.last_edge?;
-                    if Instant::now().duration_since(last) >= WIEGAND_FRAME_TIMEOUT {
-                        let bits = state.bits;
-                        let data = state.data;
-                        state.bits = 0;
-                        state.data = [0; BUFFER_SIZE];
-                        state.last_edge = None;
-                        EDGE_SIGNAL.reset();
-                        Some((bits, data))
-                    } else {
-                        None
-                    }
-                });
+            Timer::after(WIEGAND_GLITCH_DELAY).await;
 
-                if let Some((bits, data)) = frame {
-                    if bits > 0 {
-                        return Packet::decode(bits, data);
-                    }
-                    break;
-                }
+            let d0_trig = self.d0.is_low();
+            let d1_trig = self.d1.is_low();
+
+            if d0_trig == d1_trig {
+                continue;
+            }
+
+            if bits < data.len() * 8 {
+                let value: u8 = if d0_trig { 0 } else { 0x80 };
+                data[bits / 8] |= value >> (bits % 8);
+                bits += 1;
             }
         }
     }

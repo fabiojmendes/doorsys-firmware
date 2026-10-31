@@ -28,12 +28,14 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     clock::CpuClock,
-    gpio::{DriveMode, Io, Level, Output, OutputConfig},
+    gpio::{DriveMode, Level, Output, OutputConfig},
+    interrupt::Priority,
     peripherals::{TSENS, USB_DEVICE},
     rng::Rng,
     timer::timg::TimerGroup,
 };
 use esp_radio::wifi::Interface;
+use esp_rtos::embassy::InterruptExecutor;
 use panic_rtt_target as _;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -159,8 +161,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(door_task(relay_output).expect("Failed to spawn door_task"));
 
     // GPIO4 (D0) & GPIO5 (D1): Wiegand inputs; GPIO7: keypad buzzer/LED open-drain output.
-    let mut io = Io::new(peripherals.IO_MUX);
-    let reader = Reader::new(&mut io, peripherals.GPIO4, peripherals.GPIO5);
+    let reader = Reader::new(peripherals.GPIO4, peripherals.GPIO5);
     let signal_output = Output::new(
         peripherals.GPIO7,
         Level::High,
@@ -228,7 +229,12 @@ async fn main(spawner: Spawner) -> ! {
         );
     }
 
-    spawner
+    let hp_executor = mk_static!(
+        InterruptExecutor<1>,
+        InterruptExecutor::new(peripherals.FROM_CPU_INTR1)
+    );
+    let hp_spawner = hp_executor.start(Priority::Priority2);
+    hp_spawner
         .spawn(access_task(reader, signal_output, user_db).expect("Failed to spawn access_task"));
 
     let shell_ctx = ShellContext {
