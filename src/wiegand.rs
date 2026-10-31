@@ -14,9 +14,6 @@ use esp_hal::{
 /// Quiet window after the last falling edge before a Wiegand frame is considered complete.
 const WIEGAND_FRAME_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Short delay after a falling edge before sampling GPIO state to filter out glitches and noise.
-const WIEGAND_GLITCH_DELAY: Duration = Duration::from_micros(5);
-
 /// Maximum number of bytes buffered per Wiegand frame (32 bits).
 const BUFFER_SIZE: usize = 4;
 
@@ -135,8 +132,6 @@ impl Reader {
             {
                 return Packet::decode(bits, data);
             }
-
-            Timer::after(WIEGAND_GLITCH_DELAY).await;
 
             let d0_trig = self.d0.is_low();
             let d1_trig = self.d1.is_low();
