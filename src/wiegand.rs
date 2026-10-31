@@ -15,7 +15,9 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{Duration, Instant, Timer};
 use esp_hal::{
     gpio::{Event, Input, InputConfig, InputPin, Io, Pull},
-    handler, ram,
+    handler,
+    peripherals::IO_MUX,
+    ram,
 };
 
 /// Quiet window after the last falling edge before a Wiegand frame is considered complete.
@@ -48,10 +50,12 @@ fn gpio_isr() {
             return;
         };
 
-        let d0_trig = state.d0.is_interrupt_set();
-        let d1_trig = state.d1.is_interrupt_set();
+        // let d0_trig = state.d0.is_interrupt_set();
+        // let d1_trig = state.d1.is_interrupt_set();
         state.d0.clear_interrupt();
         state.d1.clear_interrupt();
+        let d0_trig = state.d0.is_low();
+        let d1_trig = state.d1.is_low();
 
         if d0_trig == d1_trig {
             return;
@@ -165,6 +169,13 @@ impl Reader {
             d0_pin.number(),
             d1_pin.number()
         );
+        [d0_pin.number(), d1_pin.number()]
+            .into_iter()
+            .for_each(|gpio| {
+                IO_MUX::regs()
+                    .gpio(gpio as usize)
+                    .modify(|_, w| w.filter_en().set_bit());
+            });
 
         let pull_up = InputConfig::default().with_pull(Pull::Up);
         let mut d0 = Input::new(d0_pin, pull_up);
