@@ -50,8 +50,6 @@ fn gpio_isr() {
             return;
         };
 
-        // let d0_trig = state.d0.is_interrupt_set();
-        // let d1_trig = state.d1.is_interrupt_set();
         state.d0.clear_interrupt();
         state.d1.clear_interrupt();
         let d0_trig = state.d0.is_low();
