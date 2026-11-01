@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.5](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.4...v0.4.5) (2026-11-01)
+
+
+### Bug Fixes
+
+* **wiegand:** enable glitch filter and read gpio inside ISR to avoid phantom reads ([c85bd9c](https://github.com/fabiojmendes/doorsys-firmware/commit/c85bd9c6a63b6a2737549a1702a1689f044e0ed1))
+* **wiegand:** remove custom ISR routine ([9338cae](https://github.com/fabiojmendes/doorsys-firmware/commit/9338caef266db4948e2373e94fd4f34846e20ede))
+* **wiegand:** remove glitch delay ([2a16449](https://github.com/fabiojmendes/doorsys-firmware/commit/2a16449f4fd94482a0fa59397f51c02f250039b0))
+
 ## [0.4.4](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.3...v0.4.4) (2026-10-29)
 
 
