@@ -21,6 +21,8 @@ use crate::{
 /// (the generated `help` listing) since it is only drained between input bytes.
 const SHELL_TX_BUF_SIZE: usize = 1024;
 
+const SHELL_PROMPT: &str = "doorsys> ";
+
 static PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 
 /// Top-level CLI commands available over the USB-Serial-JTAG shell.
@@ -166,7 +168,7 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
         .writer(BufferedWriter::new(&tx_buf))
         .command_buffer(cmd_buf.as_mut_slice())
         .history_buffer(hist_buf.as_mut_slice())
-        .prompt("doorsys> ")
+        .prompt(SHELL_PROMPT)
         .build()
         .expect("Failed to build CLI");
 
@@ -180,8 +182,10 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
             let mut captured: Option<OwnedCmd> = None;
             let _ = cli.process_byte::<CliCmd<'_>, _>(
                 byte,
-                &mut CliCmd::processor(|_handle, command| {
+                &mut CliCmd::processor(|handle, command| {
                     captured = Some(OwnedCmd::from_borrowed(command));
+                    // Suppress the automatic post-command prompt until async execution completes.
+                    handle.set_prompt("");
                     Ok(())
                 }),
             );
@@ -194,6 +198,8 @@ pub async fn run_shell(usb_device: USB_DEVICE<'static>, ctx: ShellContext) -> ! 
                 if !out.is_empty() {
                     io.write_all(out.as_bytes()).await;
                 }
+                let _ = cli.set_prompt(SHELL_PROMPT);
+                io.drain(&tx_buf).await;
             }
         }
     }
@@ -207,7 +213,7 @@ async fn execute_command(
 ) {
     match cmd {
         OwnedCmd::ArgumentTooLong(field) => {
-            let _ = writeln!(out, "\r\nError: {} is too long\r", field);
+            let _ = writeln!(out, "Error: {} is too long\r", field);
         }
         OwnedCmd::Status => {
             let stats = esp_alloc::HEAP.stats();
@@ -220,7 +226,7 @@ async fn execute_command(
             };
             let storage_free = storage_capacity.saturating_sub(storage_used);
 
-            let _ = writeln!(out, "\r\nDevice ID : {}\r", ctx.device_id);
+            let _ = writeln!(out, "Device ID : {}\r", ctx.device_id);
             let _ = writeln!(out, "Firmware  : {} ({})\r", ctx.version, ctx.git_version);
             let _ = writeln!(out, "Uptime    : {}\r", clock::uptime());
             let _ = writeln!(
@@ -274,7 +280,6 @@ async fn execute_command(
             }
         }
         OwnedCmd::Config => {
-            let _ = writeln!(out, "\r");
             match config::load_wifi(ctx.storage).await {
                 Some(w) => {
                     let masked = if w.password.is_empty() {
@@ -323,7 +328,7 @@ async fn execute_command(
                     None => {
                         let _ = writeln!(
                             out,
-                            "\r\nError: invalid auth '{}'. Expected wpa2, wpawpa2, wpa, wep, or open\r",
+                            "Error: invalid auth '{}'. Expected wpa2, wpawpa2, wpa, wep, or open\r",
                             a
                         );
                         return;
@@ -338,20 +343,17 @@ async fn execute_command(
                 auth: auth_method,
             };
             if creds.to_station_config().is_err() {
-                let _ = writeln!(out, "\r\nError: invalid SSID or password length\r");
+                let _ = writeln!(out, "Error: invalid SSID or password length\r");
                 return;
             }
 
             match config::save_wifi(ctx.storage, &creds).await {
                 Ok(()) => {
                     PENDING_REBOOT.store(true, Ordering::Relaxed);
-                    let _ = writeln!(
-                        out,
-                        "\r\nWi-Fi configuration saved. Run 'reboot' to apply.\r"
-                    );
+                    let _ = writeln!(out, "Wi-Fi configuration saved. Run 'reboot' to apply.\r");
                 }
                 Err(e) => {
-                    let _ = writeln!(out, "\r\nError saving Wi-Fi config: {:?}\r", e);
+                    let _ = writeln!(out, "Error saving Wi-Fi config: {:?}\r", e);
                 }
             }
         }
@@ -363,7 +365,7 @@ async fn execute_command(
             if config::parse_mqtt_url(url.as_str()).is_none() {
                 let _ = writeln!(
                     out,
-                    "\r\nError: invalid MQTT URL '{}'. Expected mqtt://host[:port]\r",
+                    "Error: invalid MQTT URL '{}'. Expected mqtt://host[:port]\r",
                     url
                 );
                 return;
@@ -376,22 +378,19 @@ async fn execute_command(
             match config::save_mqtt(ctx.storage, &cfg).await {
                 Ok(()) => {
                     PENDING_REBOOT.store(true, Ordering::Relaxed);
-                    let _ = writeln!(
-                        out,
-                        "\r\nMQTT configuration saved. Run 'reboot' to apply.\r"
-                    );
+                    let _ = writeln!(out, "MQTT configuration saved. Run 'reboot' to apply.\r");
                 }
                 Err(e) => {
-                    let _ = writeln!(out, "\r\nError saving MQTT config: {:?}\r", e);
+                    let _ = writeln!(out, "Error saving MQTT config: {:?}\r", e);
                 }
             }
         }
         OwnedCmd::Open => {
             door::trigger_open();
-            let _ = writeln!(out, "\r\nDoor relay triggered.\r");
+            let _ = writeln!(out, "Door relay triggered.\r");
         }
         OwnedCmd::Reboot => {
-            io.write_all(b"\r\nRebooting...\r\n").await;
+            io.write_all(b"Rebooting...\r\n").await;
             embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
             esp_hal::system::software_reset();
         }
@@ -399,18 +398,18 @@ async fn execute_command(
             if !confirm {
                 let _ = writeln!(
                     out,
-                    "\r\nRefusing factory reset without --confirm. Run 'factory-reset --confirm'.\r"
+                    "Refusing factory reset without --confirm. Run 'factory-reset --confirm'.\r"
                 );
                 return;
             }
             match ctx.storage.lock().await.erase_all().await {
                 Ok(()) => {
-                    io.write_all(b"\r\nFlash erased. Rebooting...\r\n").await;
+                    io.write_all(b"Flash erased. Rebooting...\r\n").await;
                     embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
                     esp_hal::system::software_reset();
                 }
                 Err(e) => {
-                    let _ = writeln!(out, "\r\nError erasing flash: {:?}\r", e);
+                    let _ = writeln!(out, "Error erasing flash: {:?}\r", e);
                 }
             }
         }
