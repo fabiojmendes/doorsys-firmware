@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.5...v0.4.6) (2026-11-03)
+
+
+### Bug Fixes
+
+* **shell:** render prompt only after command is done ([4e2d0c9](https://github.com/fabiojmendes/doorsys-firmware/commit/4e2d0c9cb1a2f8462482cfe2462d56af9a73dc18))
+
 ## [0.4.5](https://github.com/fabiojmendes/doorsys-firmware/compare/v0.4.4...v0.4.5) (2026-11-01)
 
 
