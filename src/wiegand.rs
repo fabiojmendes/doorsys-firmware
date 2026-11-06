@@ -121,8 +121,8 @@ impl Reader {
 
         loop {
             let edge = select(
-                self.d0.wait_for_falling_edge(),
-                self.d1.wait_for_falling_edge(),
+                self.d0.wait_for_rising_edge(),
+                self.d1.wait_for_rising_edge(),
             );
 
             if bits == 0 {
@@ -133,8 +133,8 @@ impl Reader {
                 return Packet::decode(bits, data);
             }
 
-            let d0_trig = self.d0.is_low();
-            let d1_trig = self.d1.is_low();
+            let d0_trig = self.d0.is_high();
+            let d1_trig = self.d1.is_high();
 
             if d0_trig == d1_trig {
                 continue;
